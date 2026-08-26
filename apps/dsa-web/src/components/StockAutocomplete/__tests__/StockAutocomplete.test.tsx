@@ -19,6 +19,7 @@ let stockIndexHookImpl: () => {
 let autocompleteHookImpl: () => {
   query: string;
   setQuery: ReturnType<typeof vi.fn>;
+  setQuerySilently: ReturnType<typeof vi.fn>;
   suggestions: StockSuggestion[];
   isOpen: boolean;
   highlightedIndex: number;
@@ -126,6 +127,7 @@ describe('StockAutocomplete', () => {
     autocompleteHookImpl = () => ({
       query: '',
       setQuery: vi.fn(),
+      setQuerySilently: vi.fn(),
       suggestions: mockSuggestions,
       isOpen: false,
       highlightedIndex: -1,
@@ -278,6 +280,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [],
         isOpen: false,
         highlightedIndex: -1,
@@ -309,6 +312,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [],
         isOpen: false,
         highlightedIndex: -1,
@@ -342,6 +346,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [],
         isOpen: false,
         highlightedIndex: -1,
@@ -374,6 +379,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [],
         isOpen: false,
         highlightedIndex: -1,
@@ -431,6 +437,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: mockSuggestions,
         isOpen: true,
         highlightedIndex: -1,
@@ -464,6 +471,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: mockSuggestions,
         isOpen: true,
         highlightedIndex: 0,
@@ -501,6 +509,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [hkSuggestion],
         isOpen: true,
         highlightedIndex: 0,
@@ -538,6 +547,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [bseSuggestion],
         isOpen: true,
         highlightedIndex: 0,
@@ -577,6 +587,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [krSuggestion],
         isOpen: true,
         highlightedIndex: -1,
@@ -611,6 +622,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [krSuggestion, jpSuggestion],
         isOpen: true,
         highlightedIndex: 0,
@@ -665,6 +677,7 @@ describe('StockAutocomplete', () => {
       autocompleteHookImpl = () => ({
         query: '',
         setQuery: vi.fn(),
+        setQuerySilently: vi.fn(),
         suggestions: [
           {
             canonicalCode: 'TEST.OTC',

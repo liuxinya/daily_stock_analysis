@@ -21,8 +21,15 @@ export interface UseAutocompleteOptions {
 export interface UseAutocompleteResult {
   /** Current query string */
   query: string;
-  /** Set query string */
+  /** Set query string (debounced search; reopens the dropdown on matches) */
   setQuery: (value: string) => void;
+  /**
+   * Set the query without searching, cancelling any pending debounced search.
+   *
+   * Used to sync the input after a selection: the normal setter would schedule a
+   * search that reopens the dropdown right after it was closed.
+   */
+  setQuerySilently: (value: string) => void;
   /** Search suggestions list */
   suggestions: StockSuggestion[];
   /** Whether to show suggestions list */
@@ -135,6 +142,23 @@ export function useAutocomplete(
     setHighlightedIndex(-1);
   }, []);
 
+  /**
+   * Sync the query without searching.
+   *
+   * Cancels the pending debounce as well: a search scheduled by the last keystroke
+   * would otherwise fire after the dropdown was closed and reopen it.
+   */
+  const setQuerySilently = useCallback((value: string) => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    setQuery(value);
+    setSuggestions([]);
+    setIsOpen(false);
+    setHighlightedIndex(-1);
+  }, []);
+
   // Highlight previous item
   const highlightPrevious = useCallback(() => {
     setHighlightedIndex(prev => {
@@ -177,6 +201,7 @@ export function useAutocomplete(
   return {
     query,
     setQuery: handleInputChange,
+    setQuerySilently,
     suggestions,
     isOpen,
     highlightedIndex,

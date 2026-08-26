@@ -13,7 +13,7 @@ import { useStockIndex } from '../../hooks/useStockIndex';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { SuggestionsList } from './SuggestionsList';
 import { cn } from '../../utils/cn';
-import type { Market } from '../../types/stockIndex';
+import type { Market, StockSuggestion } from '../../types/stockIndex';
 
 const AUTOCOMPLETE_INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
@@ -115,6 +115,7 @@ function StockAutocompleteInner({
   const {
     // query,
     setQuery,
+    setQuerySilently,
     suggestions,
     isOpen,
     highlightedIndex,
@@ -131,6 +132,14 @@ function StockAutocompleteInner({
 
   const inputRef = useRef<HTMLInputElement>(null);
   const prevValueRef = useRef(value);
+  /**
+   * 标记「本次 value 变化是选中候选项引起的」。
+   *
+   * onSelect 里先 onChange 再 close，但 value 变化会触发下面的同步 effect 调用
+   * setQuery —— 那是带防抖搜索的 setter，几百毫秒后又把下拉框打开了，看起来就是
+   * 选完不消失。这里改走 setQuerySilently，同时取消挂起的防抖搜索。
+   */
+  const selectionSyncRef = useRef(false);
   const [dropdownStyle, setDropdownStyle] = useState<{ top: number; left: number; width: string } | null>(null);
 
   const updateDropdownPosition = () => {
@@ -152,13 +161,29 @@ function StockAutocompleteInner({
     setDropdownStyle(null);
   };
 
+  /** 选中候选项：回填代码、关掉下拉框、并阻止随后的同步再触发一次搜索。 */
+  const selectSuggestion = (suggestion: StockSuggestion) => {
+    selectionSyncRef.current = true;
+    onChange(suggestion.displayCode);
+    closeSuggestions();
+    onSubmit(suggestion.canonicalCode, suggestion.nameZh, 'autocomplete', {
+      market: suggestion.market,
+      displayCode: suggestion.displayCode,
+    });
+  };
+
   // Sync external value with internal query (only when value truly changes)
   useEffect(() => {
     if (prevValueRef.current !== value) {
-      setQuery(value);
+      if (selectionSyncRef.current) {
+        selectionSyncRef.current = false;
+        setQuerySilently(value);
+      } else {
+        setQuery(value);
+      }
       prevValueRef.current = value;
     }
-  }, [value, setQuery]);
+  }, [value, setQuery, setQuerySilently]);
 
   // Calculate suggestion box position (using fixed positioning)
   useEffect(() => {
@@ -202,14 +227,7 @@ function StockAutocompleteInner({
       case 'Enter':
         e.preventDefault();
         if (highlightedIndex >= 0 && suggestions[highlightedIndex]) {
-          // Select highlighted item
-          const selected = suggestions[highlightedIndex];
-          onChange(selected.displayCode);
-          closeSuggestions();
-          onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete', {
-            market: selected.market,
-            displayCode: selected.displayCode,
-          });
+          selectSuggestion(suggestions[highlightedIndex]);
         } else {
           // Submit directly
           onSubmit(value);
@@ -294,17 +312,7 @@ function StockAutocompleteInner({
         <SuggestionsList
           suggestions={suggestions}
           highlightedIndex={highlightedIndex}
-          onSelect={(s) => {
-            // Update external value (shown in input box)
-            onChange(s.displayCode);
-            // Close dropdown list
-            closeSuggestions();
-            // Submit analysis
-            onSubmit(s.canonicalCode, s.nameZh, 'autocomplete', {
-              market: s.market,
-              displayCode: s.displayCode,
-            });
-          }}
+          onSelect={selectSuggestion}
           onMouseEnter={(index) => setHighlightedIndex(index)}
           style={{ position: 'fixed', ...dropdownStyle }}
         />,
