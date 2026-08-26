@@ -70,6 +70,20 @@
   --warning: var(--color-warning);
   --danger: var(--color-danger);
 
+  /* 股票查询看板图表色板（Light）。
+     这里存完整颜色而非 HSL 三元组：recharts 的 stroke/fill 直接吃 var()，
+     拿不到 hsl(var(--x)) 的拼接结果。
+     红涨绿跌为 A 股约定，与 Western 相反，勿对调。
+     该组合的红/绿在 deutan 下 ΔE≈8（6-8 floor band），因此涨跌图表必须同时
+     带正负号、流入/流出文案与左右位置作为二次编码，不能只靠颜色区分。 */
+  --chart-up: #f42525;
+  --chart-down: #20ac6b;
+  --chart-ma5: #f59b0a;
+  --chart-ma10: #705ff1;
+  --chart-ma20: #17a4ba;
+  --chart-grid: rgb(148 163 184 / 0.18);
+  --chart-axis: rgb(148 163 184 / 0.5);
+
   /* Sentiment indicator colors (Fear & Greed Index) - Adjustable via CSS */
   --sentiment-greed: var(--color-cyan);
   --sentiment-neutral: var(--color-purple);
@@ -348,6 +362,13 @@
   --success: var(--color-success);
   --warning: var(--color-warning);
   --danger: var(--color-danger);
+
+  /* 股票查询看板图表色板（Dark）。
+     暗色的 lightness band 更窄（L 0.48-0.67），Light 的 ma5/ma10 会超出上界，
+     因此这两个槽位在暗色单独取步进，不是把亮色值直接翻过来用。
+     涨跌两色在暗色 surface 上校验通过，保持与亮色一致。 */
+  --chart-ma5: #c97d05;
+  --chart-ma10: #8a7cf4;
 
   /* Sentiment indicator colors (Dark theme) - Adjustable via CSS */
   --sentiment-greed: var(--color-cyan);
