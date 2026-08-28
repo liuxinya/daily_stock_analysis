@@ -998,6 +998,15 @@ class Config:
     newsnow_base_url: str = "https://newsnow.busiyi.world"  # NewsNow HTTP API base URL (数据源侧，不影响 LLM/provider base URL)
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
 
+    # === CCTV 新闻联播文字稿配置 ===
+    cctv_news_retention_days: int = 60  # 本地文字稿保留天数
+    cctv_news_fetch_timeout_sec: float = 10.0  # 单页抓取超时
+    cctv_news_analysis_max_chars: int = 60000  # 送入 LLM 的文字稿总字数上限
+    cctv_news_analysis_cache_hours: int = 12  # 同一批新闻的分析结果复用时长（小时）
+    cctv_news_analysis_max_llm_calls: int = 24  # 单次分析允许的模型调用次数（分段+拒答二分会放大）
+    cctv_news_analysis_call_timeout_sec: int = 120  # 单次模型调用超时；底层不暴露 timeout，必须自己兜
+    cctv_news_llm_redact_terms: str = ""  # 送入 LLM 前需替换的词，格式 词:占位,词；留空用内置词表
+
     # === Agent 模式配置 ===
     agent_backend: str = "auto"
     agent_generation_backend: str = AUTO_AGENT_BACKEND_ID
@@ -1913,6 +1922,49 @@ class Config:
             ),
             newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
             bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
+            cctv_news_retention_days=parse_env_int(
+                os.getenv('CCTV_NEWS_RETENTION_DAYS'),
+                60,
+                field_name='CCTV_NEWS_RETENTION_DAYS',
+                minimum=7,
+                maximum=730,
+            ),
+            cctv_news_fetch_timeout_sec=parse_env_float(
+                os.getenv('CCTV_NEWS_FETCH_TIMEOUT_SEC'),
+                10.0,
+                field_name='CCTV_NEWS_FETCH_TIMEOUT_SEC',
+                minimum=1.0,
+                maximum=60.0,
+            ),
+            cctv_news_analysis_max_chars=parse_env_int(
+                os.getenv('CCTV_NEWS_ANALYSIS_MAX_CHARS'),
+                60000,
+                field_name='CCTV_NEWS_ANALYSIS_MAX_CHARS',
+                minimum=2000,
+                maximum=200000,
+            ),
+            cctv_news_analysis_cache_hours=parse_env_int(
+                os.getenv('CCTV_NEWS_ANALYSIS_CACHE_HOURS'),
+                12,
+                field_name='CCTV_NEWS_ANALYSIS_CACHE_HOURS',
+                minimum=0,
+                maximum=720,
+            ),
+            cctv_news_analysis_max_llm_calls=parse_env_int(
+                os.getenv('CCTV_NEWS_ANALYSIS_MAX_LLM_CALLS'),
+                24,
+                field_name='CCTV_NEWS_ANALYSIS_MAX_LLM_CALLS',
+                minimum=1,
+                maximum=200,
+            ),
+            cctv_news_llm_redact_terms=((os.getenv('CCTV_NEWS_LLM_REDACT_TERMS') or '').strip()),
+            cctv_news_analysis_call_timeout_sec=parse_env_int(
+                os.getenv('CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC'),
+                120,
+                field_name='CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC',
+                minimum=10,
+                maximum=600,
+            ),
             agent_backend=(os.getenv('AGENT_BACKEND', 'auto') or 'auto').strip().lower(),
             agent_generation_backend=agent_generation_backend,
             agent_litellm_model=agent_litellm_model,

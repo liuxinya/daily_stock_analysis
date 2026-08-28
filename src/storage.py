@@ -284,6 +284,82 @@ class IntelligenceItem(Base):
     )
 
 
+class CctvNewsItem(Base):
+    """CCTV《新闻联播》单条文字稿。
+
+    一天对应多条，``seq`` 保留播出顺序。``url`` 全局唯一，作为幂等抓取的去重键。
+    """
+
+    __tablename__ = 'cctv_news_items'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    news_date = Column(Date, nullable=False, index=True)
+    seq = Column(Integer, nullable=False, default=0)
+    title = Column(String(300), nullable=False)
+    content = Column(Text, nullable=False)
+    summary = Column(String(400))
+    url = Column(String(1000), nullable=False, unique=True, index=True)
+    char_count = Column(Integer, nullable=False, default=0)
+    fetched_at = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('news_date', 'url', name='uix_cctv_news_date_url'),
+        Index('ix_cctv_news_date_seq', 'news_date', 'seq'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<CctvNewsItem(date={self.news_date}, seq={self.seq})>"
+
+
+class CctvNewsDay(Base):
+    """单日抓取状态，用于判断某天是否需要重抓。
+
+    ``is_complete`` 为 False 表示节目单当时不可达或有条目抓取失败，上层可以在
+    下一次同步时重试，而不是把"抓了一半"当成"当天就这么多"。
+    """
+
+    __tablename__ = 'cctv_news_days'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    news_date = Column(Date, nullable=False, unique=True, index=True)
+    item_count = Column(Integer, nullable=False, default=0)
+    listed_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+    is_complete = Column(Boolean, nullable=False, default=False, index=True)
+    last_synced_at = Column(DateTime, default=datetime.now, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class CctvNewsAnalysis(Base):
+    """基于一段时间窗口内文字稿的 AI 分析结果。
+
+    ``evidence_signature`` 是"参与分析的文字稿集合 + 模型"的指纹，用于命中复用，
+    避免同一批新闻反复调用 LLM。
+    """
+
+    __tablename__ = 'cctv_news_analyses'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    start_date = Column(Date, nullable=False, index=True)
+    end_date = Column(Date, nullable=False, index=True)
+    range_days = Column(Integer, nullable=False, default=0)
+    item_count = Column(Integer, nullable=False, default=0)
+    model = Column(String(120))
+    evidence_signature = Column(String(64), nullable=False, index=True)
+    payload = Column(Text, nullable=False)
+    prompt_tokens = Column(Integer)
+    completion_tokens = Column(Integer)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_cctv_analysis_window', 'start_date', 'end_date', 'range_days'),
+        Index('ix_cctv_analysis_signature_created', 'evidence_signature', 'created_at'),
+    )
+
+
 class FundamentalSnapshot(Base):
     """
     基本面上下文快照（P0 write-only）。

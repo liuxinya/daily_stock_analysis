@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest';
 
-import { buildChatFollowUpContext } from '../chatFollowUp';
+import {
+  buildBuyTimingPrompt,
+  buildChatFollowUpContext,
+  sanitizeFollowUpQuestion,
+} from '../chatFollowUp';
 import type { AnalysisReport } from '../../types/analysis';
 
 describe('chat follow-up context', () => {
@@ -100,5 +104,25 @@ describe('chat follow-up context', () => {
     const context = buildChatFollowUpContext('600519', '贵州茅台', report);
 
     expect(context).not.toHaveProperty('market_structure_context');
+  });
+});
+
+describe('follow-up question from a source page', () => {
+  test('keeps a normal question and collapses whitespace', () => {
+    expect(sanitizeFollowUpQuestion('  科大讯飞(002230)   现在适合购买吗？ ')).toBe(
+      '科大讯飞(002230) 现在适合购买吗？',
+    );
+  });
+
+  test('rejects empty, over-long and control-character questions', () => {
+    expect(sanitizeFollowUpQuestion(null)).toBeNull();
+    expect(sanitizeFollowUpQuestion('   ')).toBeNull();
+    expect(sanitizeFollowUpQuestion('很'.repeat(201))).toBeNull();
+    expect(sanitizeFollowUpQuestion(`买${String.fromCharCode(0)}吗`)).toBeNull();
+  });
+
+  test('builds the buy-timing prompt with and without a name', () => {
+    expect(buildBuyTimingPrompt('002230', '科大讯飞')).toBe('科大讯飞(002230)现在适合购买吗？');
+    expect(buildBuyTimingPrompt('002230', null)).toBe('002230现在适合购买吗？');
   });
 });

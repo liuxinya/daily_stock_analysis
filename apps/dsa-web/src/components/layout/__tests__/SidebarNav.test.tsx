@@ -59,7 +59,7 @@ describe('SidebarNav', () => {
 
     expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
     const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
-    expect(hrefs.slice(0, 6)).toEqual(['/', '/stock-query', '/chat', '/screening', '/portfolio', '/decision-signals']);
+    expect(hrefs.slice(0, 6)).toEqual(['/', '/stock-query', '/chat', '/cctv-news', '/screening', '/portfolio']);
   });
 
   it('refreshes the controlled screening entry after config changes', async () => {

@@ -19,8 +19,9 @@ type ResolveChatFollowUpContextParams = {
 };
 
 const MAX_FOLLOW_UP_NAME_LENGTH = 80;
+const MAX_FOLLOW_UP_QUESTION_LENGTH = 200;
 
-function hasInvalidFollowUpNameCharacter(value: string): boolean {
+function hasInvalidFollowUpCharacter(value: string): boolean {
   return Array.from(value).some((character) => {
     const code = character.charCodeAt(0);
     return code < 32 || code === 127;
@@ -44,7 +45,29 @@ export function sanitizeFollowUpStockName(stockName: string | null): string | nu
 
   if (
     normalized.length > MAX_FOLLOW_UP_NAME_LENGTH
-    || hasInvalidFollowUpNameCharacter(normalized)
+    || hasInvalidFollowUpCharacter(normalized)
+  ) {
+    return null;
+  }
+
+  return normalized;
+}
+
+/**
+ * 由来源页指定的追问文案，例如新闻分析里的“现在适合购买吗”。
+ *
+ * 只做长度与控制字符校验；拿不到合法问题时由调用方回落到默认追问，
+ * 而不是把一段可疑文本直接塞进输入框。
+ */
+export function sanitizeFollowUpQuestion(question: string | null): string | null {
+  const normalized = question?.trim().replace(/\s+/g, ' ') ?? '';
+  if (!normalized) {
+    return null;
+  }
+
+  if (
+    normalized.length > MAX_FOLLOW_UP_QUESTION_LENGTH
+    || hasInvalidFollowUpCharacter(normalized)
   ) {
     return null;
   }
@@ -105,6 +128,12 @@ export function parseFollowUpRecordId(recordId: string | null): number | undefin
 export function buildFollowUpPrompt(stockCode: string, stockName: string | null): string {
   const displayName = stockName ? `${stockName}(${stockCode})` : stockCode;
   return `请深入分析 ${displayName}`;
+}
+
+/** “现在适合买吗”这类择时提问的统一文案，供各处跳转问股的入口复用。 */
+export function buildBuyTimingPrompt(stockCode: string, stockName: string | null): string {
+  const displayName = stockName ? `${stockName}(${stockCode})` : stockCode;
+  return `${displayName}现在适合购买吗？`;
 }
 
 export function buildChatFollowUpContext(

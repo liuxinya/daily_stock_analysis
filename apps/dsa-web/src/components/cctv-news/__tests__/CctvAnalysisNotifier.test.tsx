@@ -1,0 +1,72 @@
+import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { CctvAnalysisNotifier } from '../CctvAnalysisNotifier';
+import { useCctvAnalysisStore } from '../../../stores/cctvAnalysisStore';
+
+vi.mock('../../../api/cctvNews', () => ({
+  cctvNewsApi: { submitAnalysisJob: vi.fn(), getAnalysisJob: vi.fn() },
+}));
+
+beforeEach(() => {
+  useCctvAnalysisStore.setState({ job: null, result: null, submitError: null, notice: null });
+});
+
+describe('CctvAnalysisNotifier', () => {
+  it('renders nothing without a notice', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <CctvAnalysisNotifier />
+      </MemoryRouter>,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('shows the success notice from any route', () => {
+    useCctvAnalysisStore.setState({
+      notice: { id: 1, tone: 'success', title: 'CCTV 新闻分析已完成', message: '已分析 20 篇新闻，点击查看结果。' },
+    });
+
+    // 挂在别的路由下也要能弹出，这是"无论用户在哪都能收到通知"的关键
+    render(
+      <MemoryRouter initialEntries={['/portfolio']}>
+        <CctvAnalysisNotifier />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('CCTV 新闻分析已完成')).toBeInTheDocument();
+    expect(screen.getByText('已分析 20 篇新闻，点击查看结果。')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '查看结果' })).toBeInTheDocument();
+  });
+
+  it('hides the jump link for failures', () => {
+    useCctvAnalysisStore.setState({
+      notice: { id: 2, tone: 'error', title: 'CCTV 新闻分析失败', message: '模型调用失败' },
+    });
+
+    render(
+      <MemoryRouter>
+        <CctvAnalysisNotifier />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('CCTV 新闻分析失败')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '查看结果' })).not.toBeInTheDocument();
+  });
+
+  it('dismisses on close', () => {
+    useCctvAnalysisStore.setState({
+      notice: { id: 3, tone: 'warning', title: '降级完成', message: '已改用关键词覆盖' },
+    });
+
+    render(
+      <MemoryRouter>
+        <CctvAnalysisNotifier />
+      </MemoryRouter>,
+    );
+
+    screen.getByRole('button', { name: '关闭' }).click();
+    expect(useCctvAnalysisStore.getState().notice).toBeNull();
+  });
+});

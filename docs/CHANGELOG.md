@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 在 seed、build entry 与 runtime candidate 三层严格校验 alias 唯一性与整数 popularity：NFKC/casefold 等价 alias 跨条目冲突被拒绝（无静默覆盖），非负整数之外（小数/布尔/负值/字符串）popularity 一律拒绝，整数 `100` 保持有效。
 - [修复] 收敛已登记 CSI 显式身份在 resolver、任务去重键与历史候选中的分裂：`csi930955`/`930955.CSI`/`CSI930955` 统一解析为 parser canonical `csi930955`，未登记 `csi930956`/`930956.CSI` 保持既有降级语义；`is_code_like()`、REST/watchlist 输入边界与完整 Pipeline 透传不变。
 - [修复] 阻止任意更新的非 bundled 指数候选（含 legacy `static` 子集）在 remote 缺失/损坏时以 active-index 子集覆盖 bundled baseline：所有非 bundled 候选必须为 bundled active-index canonical 集合的合法超集，否则回退 bundled 并记录 WARNING。
+- [新功能] 新增「CCTV 新闻」模块：按天抓取央视网《新闻联播》单条文字稿并落库（`cctv_news_items` / `cctv_news_days` / `cctv_news_analyses`），Web 端 `/cctv-news` 页面支持近一个月按天浏览、文字总结与文字稿详情、近 30 天全文搜索；单日抓取用 `index_available` / `failed_count` / `is_complete` 显式区分"节目单不可达""部分条目失败""完整成功"，未完整的日期在冷却后自动重抓，不把抓了一半当成当天全部。
+- [新功能] CCTV 新闻模块新增 AI 新闻分析：时间范围支持今天 / 3 天 / 一周 / 10 天 / 20 天，也可对指定某一天单独分析（`POST /analysis` 或 `/analysis/jobs` 传 `news_date`）；输出分「新闻事实层」（政策信号、利好行业方向、利空行业方向、对股民重要的信息）与「模型推断层」（行业龙头个股，带 `direction` 与 `is_leader`）两层。事实约束由四层措施落实：prompt 只含窗口内文字稿、文字稿按不可信输入加哨兵转义、服务端逐条校验 `evidence_ids` 与 `mentioned_terms`（原文查不到即丢弃并回传 `grounding.dropped`）、个股强制挂在已通过校验的行业上并带免责声明。同一批新闻 + 同一模型命中 `evidence_signature` 时复用结果，不重复调用 LLM。
+- [新功能] CCTV 新闻分析改为后台任务 + 进度展示：`POST /analysis/jobs` 提交后立即返回 `job_id`，`GET /analysis/jobs/{job_id}` 返回 `phase`（读取新闻/分析新闻/汇总校验）、`total_items`、`current_chunk`/`total_chunks` 与 `progress`。前端任务状态存放在模块级 zustand store，轮询定时器不挂在组件上，因此切换路由不中断；完成后由全局挂载的通知组件弹出提示，任何路由都能收到并一键跳回结果页。
+- [修复] CCTV 新闻分析不再因模型拒答而报错：实测部分国内模型通道对涉及领导人的文字稿会返回空 `content`，而《新闻联播》头条几乎每天涉及，导致分析必然 503。现在按字数分段串行解读，某段拿不到内容时改为逐条各调一次、只跳过真正拿不到内容的条目（`coverage.skipped_item_ids`），逐条重试时产业信息更丰富的条目优先；送入模型前把这类词替换为角色占位（`CCTV_NEWS_LLM_REDACT_TERMS`），只改送给模型的副本，入库原文与前端展示的文字稿不变；长窗口按"有产业信息优先"裁剪；全部段落失败时返回 `degraded=true` + 关键词覆盖统计且 HTTP 200，仅「LLM 未配置」仍返回 503。
+- [修复] CCTV 新闻分析单次模型调用增加 deadline（`CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC`，默认 120 秒）：底层 `generate_text_with_metadata` 未暴露 timeout，litellm 在连接挂死时会无限等待，后台任务会永远停在某一段、进度条卡住且用户拿不到结果。超时按"该段没拿到内容"处理并在降级原因里报根因（超时优先于"预算耗尽"，因为预算常常正是被超时调用烧掉的）。
+- [新功能] 新增配置项 `CCTV_NEWS_RETENTION_DAYS`、`CCTV_NEWS_FETCH_TIMEOUT_SEC`、`CCTV_NEWS_ANALYSIS_MAX_CHARS`、`CCTV_NEWS_ANALYSIS_CACHE_HOURS`、`CCTV_NEWS_ANALYSIS_MAX_LLM_CALLS`、`CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC`、`CCTV_NEWS_LLM_REDACT_TERMS`，均有默认值，不配置也可运行。
+- [修复] 股票代码自动补全选中候选项后下拉框不消失：选中触发的 value 同步改走 `setQuerySilently`，取消挂起的防抖搜索，避免搜索回包重新打开列表。
+- [文档] 新增 `docs/cctv-news.md`，说明数据来源与时效、抓取完整性标记、AI 分析的事实约束层、API 契约、落库结构与使用注意。
+- [测试] 新增 CCTV 新闻模块回归覆盖：解析层（节目单去重/站外链接过滤/纯视频条目/部分失败标记）、同步层（幂等跳过、未完整日期冷却重试、保留期清理）、输入规范化层（脱敏不影响入库原文、自定义词表、超预算按产业信息优先裁剪）、事实约束层（无原文依据的行业与其关联个股一并丢弃、越界引用、非法股票代码置空、哨兵转义、分段沿用全局编号、跨段行业去重与证据合并）、容错层（全程拒答降级为关键词统计而非报错、单条拒答只跳过该条、调用预算上限生效）、API 层（分页查询、单日分析、后台任务进度与终态、空窗口 400、404/422/503 语义），共 39 个后端用例；前端页面 9 项交互测试（含后台任务提交、进度条阶段与百分比、单日分析入口）与通知组件 4 项测试。
+- [新功能] CCTV 新闻 AI 分析的「关注个股」每行新增「问股」「查询」两个操作：问股带「`名称(代码)`现在适合购买吗？」跳到 `/chat` 并在 Agent 就绪后自动发出（Agent 不可用时问题留在输入框），查询带 `?code=` 跳到股票查询看板并直接查这只票。问股页新增 `q=`（自定义提问，做长度与控制字符校验，非法时回落默认追问）与 `send=1`（自动发送，同一次跳转只发一次）参数；股票查询页支持 `?code=` 入口，首屏直接按该代码取数、已在页内时再次带参会换标的，非 A 股 6 位代码回落默认股。个股代码由模型推断，校验不过的行不给入口。
+- [测试] 补充跳转入口回归：CCTV 页两项跳转目标与查询串断言、问股页 `q`/`send` 预填与自动发送及非法提问回落、股票查询页 `?code=` 首屏取数/回落/同页换股，以及 `sanitizeFollowUpQuestion` 与 `buildBuyTimingPrompt` 单测。
 
 ## [3.31.0] - 2026-08-23
 

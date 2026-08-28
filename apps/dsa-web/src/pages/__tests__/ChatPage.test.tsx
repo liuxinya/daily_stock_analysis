@@ -2024,6 +2024,66 @@ describe('ChatPage', () => {
     expect(historyApi.getDetail).not.toHaveBeenCalled();
   });
 
+  it('prefills the question provided by the source page instead of the default prompt', async () => {
+    const question = '算力龙头(603019)现在适合购买吗？';
+    render(
+      <MemoryRouter
+        initialEntries={[`/chat?stock=603019&name=${encodeURIComponent('算力龙头')}&q=${encodeURIComponent(question)}`]}
+      >
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByDisplayValue(question)).toBeInTheDocument();
+    // 没有 send=1 时不代替用户发送
+    expect(mockStartStream).not.toHaveBeenCalled();
+  });
+
+  it('auto-sends the question when the source page asks for it', async () => {
+    const question = '算力龙头(603019)现在适合购买吗？';
+    render(
+      <MemoryRouter
+        initialEntries={[`/chat?stock=603019&name=${encodeURIComponent('算力龙头')}&q=${encodeURIComponent(question)}&send=1`]}
+      >
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: question,
+          context: {
+            stock_code: '603019',
+            stock_name: '算力龙头',
+          },
+        }),
+        expect.objectContaining({
+          skillName: '趋势分析',
+        }),
+      );
+    });
+    expect(mockStartStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the default prompt when the provided question is malformed', async () => {
+    const tooLong = '很'.repeat(201);
+    render(
+      <MemoryRouter
+        initialEntries={[`/chat?stock=600519&name=%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0&q=${encodeURIComponent(tooLong)}&send=1`]}
+      >
+        <ChatPage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(mockStartStream).toHaveBeenCalledWith(
+        expect.objectContaining({ message: '请深入分析 贵州茅台(600519)' }),
+        expect.anything(),
+      );
+    });
+  });
+
   it('reprocesses follow-up query params when navigating to the same chat route again', async () => {
     const firstDeferred = createDeferred<Awaited<ReturnType<typeof historyApi.getDetail>>>();
     const secondDeferred = createDeferred<Awaited<ReturnType<typeof historyApi.getDetail>>>();

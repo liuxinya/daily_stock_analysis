@@ -16,6 +16,15 @@ from src.schemas.analysis_context_pack import (
     ContextFieldStatus,
     DataQuality,
 )
+from src.schemas.cctv_news_analysis import (
+    CCTV_NEWS_ANALYSIS_SCHEMA_VERSION,
+    STOCK_INFERENCE_DISCLAIMER,
+    CctvNewsAnalysisResult,
+    IndustryOpportunity,
+    InvestorTakeaway,
+    PolicySignal,
+    StockCandidate,
+)
 from src.schemas.report_schema import AnalysisReportSchema
 
 __all__ = [
@@ -25,6 +34,13 @@ __all__ = [
     "AnalysisContextItem",
     "AnalysisContextPack",
     "AnalysisSubject",
+    "CCTV_NEWS_ANALYSIS_SCHEMA_VERSION",
+    "STOCK_INFERENCE_DISCLAIMER",
+    "CctvNewsAnalysisResult",
     "ContextFieldStatus",
     "DataQuality",
+    "IndustryOpportunity",
+    "InvestorTakeaway",
+    "PolicySignal",
+    "StockCandidate",
 ]

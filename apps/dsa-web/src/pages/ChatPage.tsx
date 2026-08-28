@@ -21,6 +21,7 @@ import {
   buildFollowUpPrompt,
   parseFollowUpRecordId,
   resolveChatFollowUpContext,
+  sanitizeFollowUpQuestion,
   sanitizeFollowUpStockCode,
   sanitizeFollowUpStockName,
 } from '../utils/chatFollowUp';
@@ -213,6 +214,7 @@ const ChatPage: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [isFollowUpContextLoading, setIsFollowUpContextLoading] = useState(false);
+  const [autoSendRequest, setAutoSendRequest] = useState<{ seq: number; message: string } | null>(null);
   const [sendToast, setSendToast] = useState<{
     type: 'success' | 'error';
     message: string;
@@ -244,6 +246,8 @@ const ChatPage: React.FC = () => {
   const sendToastTimerRef = useRef<number | null>(null);
   const followUpHydrationTokenRef = useRef(0);
   const followUpContextRef = useRef<ChatFollowUpContext | null>(null);
+  const autoSendSeqRef = useRef(0);
+  const autoSentSeqRef = useRef(0);
   const shouldStickToBottomRef = useRef(true);
   const pendingScrollBehaviorRef = useRef<ScrollBehavior>('auto');
   const agentStatusRequestIdRef = useRef(0);
@@ -631,10 +635,13 @@ const ChatPage: React.FC = () => {
   }, [deleteConfirmId, sessionId, loadSessions, handleStartNewChat]);
 
   // Handle follow-up from report page: ?stock=600519&name=贵州茅台&recordId=xxx
+  // 带 q= 时用来源页指定的问题替换默认追问文案，再带 send=1 时等 Agent 就绪后自动发出。
   useEffect(() => {
     const stock = sanitizeFollowUpStockCode(searchParams.get('stock'));
     const name = sanitizeFollowUpStockName(searchParams.get('name'));
     const recordId = parseFollowUpRecordId(searchParams.get('recordId'));
+    const question = sanitizeFollowUpQuestion(searchParams.get('q'));
+    const shouldAutoSend = searchParams.get('send') === '1';
 
     if (!stock) {
       setSearchParams({}, { replace: true });
@@ -642,7 +649,8 @@ const ChatPage: React.FC = () => {
     }
 
     const hydrationToken = ++followUpHydrationTokenRef.current;
-    setInput(buildFollowUpPrompt(stock, name));
+    const prompt = question ?? buildFollowUpPrompt(stock, name);
+    setInput(prompt);
     setActiveStockCode(stock);
     setActiveStockContext({
       stock_code: stock,
@@ -654,6 +662,9 @@ const ChatPage: React.FC = () => {
     };
     if (recordId !== undefined) {
       setIsFollowUpContextLoading(true);
+    }
+    if (shouldAutoSend) {
+      setAutoSendRequest({ seq: ++autoSendSeqRef.current, message: prompt });
     }
     void resolveChatFollowUpContext({
       stockCode: stock,
@@ -743,13 +754,27 @@ const ChatPage: React.FC = () => {
     [activeStockContext, agentAvailable, agentStatus, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, sessionSelectedSkillIds, startStream, stockIndex],
   );
 
+  /**
+   * 来源页要求“跳转并直接提问”时（send=1）在这里补发。
+   *
+   * 不能在解析 URL 的那一刻就发：Agent 状态还在探测、追问上下文可能还在取，
+   * 提前发会被 handleSend 的可用性判断直接丢掉。Agent 始终不可用时问题仍留在
+   * 输入框里，由用户自己决定要不要发。autoSentSeqRef 保证同一次跳转只发一次。
+   */
+  useEffect(() => {
+    if (!autoSendRequest || autoSentSeqRef.current >= autoSendRequest.seq) return;
+    if (loading || isFollowUpContextLoading || !agentAvailable || !agentStatus) return;
+    autoSentSeqRef.current = autoSendRequest.seq;
+    setAutoSendRequest(null);
+    void handleSend(autoSendRequest.message);
+  }, [autoSendRequest, agentAvailable, agentStatus, handleSend, isFollowUpContextLoading, loading]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
   };
-
   const handleQuickQuestion = (q: (typeof QUICK_QUESTIONS)[0]) => {
     setSelectedSkillIds([q.skill]);
     handleSend(q.label, [q.skill], q.stockContext);

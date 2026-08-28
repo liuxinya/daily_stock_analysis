@@ -2,6 +2,7 @@ import type React from 'react';
 import { lazy, useEffect } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
+import { CctvAnalysisNotifier } from './components/cctv-news/CctvAnalysisNotifier';
 import {
   PageLoadingFallback,
   RouteOutletBoundary,
@@ -18,6 +19,7 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
+const CctvNewsPage = lazy(() => import('./pages/CctvNewsPage'));
 const PortfolioPage = lazy(() => import('./pages/PortfolioPage'));
 const DecisionSignalsPage = lazy(() => import('./pages/DecisionSignalsPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
@@ -72,6 +74,7 @@ const AppContent: React.FC = () => {
   }
 
   return (
+    <>
     <Routes>
       <Route
         element={(
@@ -83,6 +86,7 @@ const AppContent: React.FC = () => {
         <Route path="/" element={<HomePage />} />
         <Route path="/stock-query" element={<StockQueryPage />} />
         <Route path="/chat" element={<ChatPage />} />
+        <Route path="/cctv-news" element={<CctvNewsPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/decision-signals" element={<DecisionSignalsPage />} />
         <Route path="/screening" element={<StockScreeningPage />} />
@@ -93,6 +97,8 @@ const AppContent: React.FC = () => {
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
+      <CctvAnalysisNotifier />
+    </>
   );
 };
 

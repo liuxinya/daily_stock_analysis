@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AppPage, ApiErrorAlert, Loading, PageHeader } from '../components/common';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { AnalysisTab } from '../components/stock-query/AnalysisTab';
@@ -51,13 +52,21 @@ const normalizeCode = (raw: string): string => {
   return digits.slice(0, 6);
 };
 
+/** 外部入口用 ?code= 指定标的（如新闻分析里的“查询”），非 A 股 6 位代码时回落到默认股。 */
+const resolveEntryCode = (raw: string | null): string => {
+  const normalized = normalizeCode(raw ?? '');
+  return normalized.length === 6 ? normalized : DEFAULT_CODE;
+};
+
 type TabState<T> = { data?: T; loading: boolean; error?: ParsedApiError };
 
 const initialState = <T,>(): TabState<T> => ({ loading: false });
 
 export const StockQueryPage: React.FC = () => {
-  const [input, setInput] = useState(DEFAULT_CODE);
-  const [code, setCode] = useState(DEFAULT_CODE);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // 首屏直接用 ?code= 初始化，避免先为默认股发一轮请求再作废。
+  const [input, setInput] = useState(() => resolveEntryCode(searchParams.get('code')));
+  const [code, setCode] = useState(() => resolveEntryCode(searchParams.get('code')));
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
 
   const [quote, setQuote] = useState<TabState<StockQuote>>(initialState);
@@ -103,6 +112,22 @@ export const StockQueryPage: React.FC = () => {
     resetAll();
     setCode(next);
   }, [resetAll]);
+
+  /**
+   * 已停留在本页时再次带 ?code= 进来（例如从新闻分析连续点两只股票的“查询”），
+   * 组件不会重挂，所以要在这里换标的。首屏那次参数与初始 code 相同，直接清掉即可，
+   * 否则会把正在飞的首屏请求作废又不补发。
+   */
+  useEffect(() => {
+    const raw = searchParams.get('code');
+    if (raw === null) return;
+    const next = normalizeCode(raw);
+    if (next.length === 6 && next !== code) {
+      setInput(next);
+      handleSubmit(next);
+    }
+    setSearchParams({}, { replace: true });
+  }, [code, handleSubmit, searchParams, setSearchParams]);
 
   /** 通用取数：已有数据或正在取时不重复发请求；迟到的响应直接丢掉。 */
   const load = useCallback(
