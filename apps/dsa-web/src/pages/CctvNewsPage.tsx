@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { RefreshCw, Search, Sparkles } from 'lucide-react';
 
 import {
@@ -37,7 +38,7 @@ const SYNC_WINDOW_DAYS = 30;
 const SEARCH_PAGE_SIZE = 20;
 
 const ANALYSIS_RANGES: Array<{ value: CctvAnalysisRange; label: string }> = [
-  { value: 1, label: '今天' },
+  { value: 1, label: '昨天' },
   { value: 3, label: '最近 3 天' },
   { value: 7, label: '最近一周' },
   { value: 10, label: '最近 10 天' },
@@ -52,11 +53,19 @@ const TABS: Array<{ key: TabKey; label: string }> = [
 ];
 
 const CctvNewsPage: React.FC = () => {
+  const location = useLocation();
   useEffect(() => {
     document.title = 'CCTV 新闻 - DSA';
   }, []);
 
   const [activeTab, setActiveTab] = useState<TabKey>('news');
+
+  useEffect(() => {
+    const requestedTab = new URLSearchParams(location.search).get('tab');
+    if (requestedTab === 'news' || requestedTab === 'analysis') {
+      setActiveTab(requestedTab);
+    }
+  }, [location.search]);
 
   const [days, setDays] = useState<CctvNewsDaySummary[]>([]);
   const [daysLoading, setDaysLoading] = useState(true);
@@ -101,7 +110,9 @@ const CctvNewsPage: React.FC = () => {
     setDaysLoading(true);
     try {
       const response = await cctvNewsApi.listDays(LIST_WINDOW_DAYS);
-      if (!isLatestRequest()) return;
+      // A superseded request may still provide a valid freshness snapshot for
+      // the route-entry check; only its state writes are discarded.
+      if (!isLatestRequest()) return response;
       setDays(response.days);
       setDaysError(null);
       setSelectedDate((current) => {
@@ -111,17 +122,60 @@ const CctvNewsPage: React.FC = () => {
         }
         return response.days[0]?.newsDate ?? null;
       });
+      return response;
     } catch (error) {
-      if (!isLatestRequest()) return;
+      if (!isLatestRequest()) return null;
       setDaysError(getParsedApiError(error));
+      return null;
     } finally {
       if (isLatestRequest()) setDaysLoading(false);
     }
   }, []);
 
+  const autoSyncInFlightRef = useRef<Promise<void> | null>(null);
+  const autoSyncStartedRef = useRef(false);
   useEffect(() => {
-    void loadDays();
-  }, [loadDays]);
+    if (autoSyncStartedRef.current) return;
+    autoSyncStartedRef.current = true;
+    // 注意：这里不能用 cleanup 里置位的 cancelled 标志来拦 setState。
+    // StrictMode 下 effect 会“执行→清理→重放”，重放会命中上面的 ref 守卫直接
+    // return，而首次执行的 cancelled 已被清理函数置真——若据此跳过
+    // setSyncing(false)，按钮会永远停在“同步中”。真正卸载后 setState 只是
+    // no-op，直接更新即可；loadDays 自带请求序号守卫，不怕过期写入。
+    const checkLatestNews = async () => {
+      const initialLoad = loadDays();
+      // The sync endpoint performs the freshness check server-side and skips
+      // complete/recently attempted dates. Start it immediately on route entry
+      // instead of waiting for the directory response, which can be cancelled
+      // when React replays an effect or the user changes routes quickly.
+      if (autoSyncInFlightRef.current) {
+        await autoSyncInFlightRef.current;
+        await loadDays();
+        return;
+      }
+
+      setSyncing(true);
+      setSyncError(null);
+      const syncPromise = cctvNewsApi.sync({ days: 2 }).then(() => undefined);
+      autoSyncInFlightRef.current = syncPromise;
+      try {
+        // The backend skips complete/recently attempted days, so this remains
+        // cheap on repeat visits while filling a missing current day promptly.
+        await syncPromise;
+        // Do not keep the toolbar blocked while the follow-up directory refresh
+        // waits on a slow or stale response.
+        setSyncing(false);
+        const initialResponse = await initialLoad;
+        if (initialResponse) await loadDays();
+      } catch (error) {
+        setSyncError(getParsedApiError(error));
+      } finally {
+        if (autoSyncInFlightRef.current === syncPromise) autoSyncInFlightRef.current = null;
+        setSyncing(false);
+      }
+    };
+    void checkLatestNews();
+  }, [location.pathname, loadDays]);
 
   const loadItems = useCallback(
     async (pageOverride?: number) => {

@@ -1,6 +1,6 @@
 # CCTV 新闻联播文字稿与 AI 分析
 
-Web 端「CCTV 新闻」页面（`/cctv-news`）提供两件事：按天浏览近一个月的《新闻联播》文字稿，以及基于用户选定时间窗口内文字稿原文的 AI 政策与产业解读。
+Web 端「CCTV 新闻」页面（`/cctv-news`）提供两件事：按天浏览近一个月的《新闻联播》文字稿，以及基于用户选定时间窗口内文字稿原文的 AI 政策与产业解读。首次进入页面会先检测目录是否落后于当前日期；没有新闻或最新日期缺失时自动同步最近两天，用户无需每天手动点击同步。
 
 ## 能力范围
 
@@ -105,6 +105,9 @@ CCTV_NEWS_ANALYSIS_CACHE_HOURS=12
 CCTV_NEWS_ANALYSIS_MAX_LLM_CALLS=40
 # 单次模型调用超时（秒）。底层 LLM 门面未暴露 timeout，连接挂死会让后台任务永远卡住
 CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC=120
+# 新闻分析推理强度：low（推荐，速度优先）/high/max（质量优先）。
+# 对支持 reasoning_effort 的 GLM-5 / DeepSeek-V4 路由透传；其他模型自动忽略。
+CCTV_NEWS_REASONING_EFFORT=low
 # 送入 LLM 前需替换的词，格式 词:占位,词；留空用内置词表
 CCTV_NEWS_LLM_REDACT_TERMS=
 ```
@@ -121,8 +124,8 @@ CCTV_NEWS_LLM_REDACT_TERMS=
 | GET | `/items?news_date=&days=&query=&page=&page_size=&include_content=` | 分页查询文字稿，默认只返回摘要 |
 | GET | `/items/{item_id}` | 单条文字稿全文 |
 | POST | `/sync` | 同步最近 N 天（`{"days": 30, "force": false}`），已完整的日期自动跳过 |
-| POST | `/analysis` | 同步分析（`{"range_days": 1\|3\|7\|10\|20\|30}` 或 `{"news_date": "2026-08-25"}`），长窗口容易超时，前端不用它 |
-| POST | `/analysis/jobs` | **提交后台分析任务**，参数同上，立即返回 `job_id` |
+| POST | `/analysis` | 同步分析（`{"range_days": 1\|3\|7\|10\|20\|30}` 或 `{"news_date": "2026-08-25"}`）；`range_days=1` 对应北京时间当前日期的前一天，窗口无数据时会自动拉取一次 |
+| POST | `/analysis/jobs` | **提交后台分析任务**，参数同上，窗口无数据时会先自动拉取一次，再返回 `job_id` |
 | GET | `/analysis/jobs/{job_id}` | 轮询任务进度与结果 |
 | GET | `/analysis/latest?range_days=` | 最近一次分析结果 |
 

@@ -158,9 +158,24 @@ class IntelligenceRepository:
         query: Optional[str] = None,
         days: Optional[int] = None,
         published_days: Optional[int] = None,
+        published_since: Optional[datetime] = None,
+        published_until: Optional[datetime] = None,
+        undated_fallback: bool = False,
         page: int = 1,
         page_size: int = 50,
     ) -> Tuple[List[IntelligenceItem], int]:
+        """按 scope / 关键词 / 时间窗查询资讯条目。
+
+        时间窗三种表达，按优先级取其一：``published_since``/``published_until``（绝对时刻，
+        供"自上一个收盘以来"这类需求）> ``published_days``（整数天）。``days`` 是独立的
+        ``fetched_at`` 窗口，可与上面叠加。
+
+        ``undated_fallback`` 默认关闭：部分上游（NewsNow 的热榜类源）不提供发布时间，
+        这类条目 ``published_at`` 为 NULL，而 SQL 里 ``NULL >= x`` 不为真，因此默认会被
+        时间窗排除掉 —— 个股/大盘分析刻意要这个严格语义（证据必须有可信发布时间）。
+        开启后回退到 ``coalesce(published_at, fetched_at)``，与下面的排序表达式一致，
+        让这些源能参与消息面汇总。
+        """
         conditions = []
         if scope_type:
             conditions.append(IntelligenceItem.scope_type == scope_type)
@@ -173,9 +188,19 @@ class IntelligenceRepository:
             conditions.append(or_(IntelligenceItem.title.like(pattern), IntelligenceItem.summary.like(pattern)))
         if days is not None:
             conditions.append(IntelligenceItem.fetched_at >= datetime.now() - timedelta(days=max(1, int(days))))
-        if published_days is not None:
-            published_cutoff = datetime.now() - timedelta(days=max(1, int(published_days)))
-            conditions.append(IntelligenceItem.published_at >= published_cutoff)
+
+        published_column = (
+            func.coalesce(IntelligenceItem.published_at, IntelligenceItem.fetched_at)
+            if undated_fallback
+            else IntelligenceItem.published_at
+        )
+        if published_since is not None:
+            conditions.append(published_column >= published_since)
+        elif published_days is not None:
+            conditions.append(published_column >= datetime.now() - timedelta(days=max(1, int(published_days))))
+        if published_until is not None:
+            conditions.append(published_column <= published_until)
+
         where_clause = and_(*conditions) if conditions else True
         safe_page = max(1, int(page))
         safe_size = max(1, min(int(page_size), 100))

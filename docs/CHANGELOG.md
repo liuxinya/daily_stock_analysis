@@ -14,6 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] Web Chat 意图识别层新增分词模块：`web_intent_tokenizer` 六步管道（多股票全名实体扫描 → 标点/空白切分 → 代码形提取 → 市场关键词 → 无歧义关键词 → 残存 gap 多策略 DFS 匹配）把用户消息切分为携带语义标签的 Token 序列；配套 `web_intent_types` 数据字典（Token 结构、Market 枚举、21 个语义 tag、clean/extend 双词池与正则机器）。核心原则"宁可不做，不可做错"：Step 1~5 只做精确匹配，Step 6 要求整段 TAG 全覆盖（交叉验证）才产出，未覆盖片段保持空 tag 交下游 LLM 兜底；代码形 token 辨认为 `stock_code`（附 code/name/market 三元组）/ `wrong_{market}_code` / `unknown_{market}_code` 三态，token 层代码拼写统一 canonical 归一（a=6 位裸数字、hk=HK+5 位、us=大写 ticker）。意图枚举与意图识别结果随后续 `web_intent_resolver` PR 引入。新增 183 个分词单元测试。
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [新功能] Web 新增「实时新闻」页面（导航挂在 CCTV 新闻下方，路由 `/realtime-news`）：按平台 tab 切换查看同花顺、东方财富、新浪财经、财新、华尔街见闻、金十数据、格隆汇的最新快讯；「财经热榜」tab 把可用平台并发合并后按发布时间倒序混排，单平台失败只标注不影响其他平台。请求时直连上游 + 进程内短 TTL 缓存，不落库、不定时抓取。新增 `GET /api/v1/realtime-news/platforms` 与 `GET /api/v1/realtime-news/items`；tab 列表由后端注册表驱动，新增平台前端无需改动。
+- [新功能] 实时新闻的 `published_at` 统一为带时区偏移的 ISO8601：akshare 的北京本地时间补 `Asia/Shanghai`，NewsNow 的 epoch 毫秒补 UTC，相对时间由前端按浏览器本地时间计算，避免 naive 与 aware 混用产生 8 小时偏差。
+- [新功能] 新增配置 `REALTIME_NEWS_CACHE_TTL_SEC`、`REALTIME_NEWS_FETCH_TIMEOUT_SEC`、`REALTIME_NEWS_MAX_ITEMS_PER_PLATFORM`（均可选，已同步 `.env.example`、Web 设置页注册表与帮助文案）。
+- [文档] 新增 `docs/realtime-news.md`：平台与数据源对照表、直连上游的共同约定（总预算语义、游标翻页、外链白名单）、雪球与第一财经各自的接口约定（匿名 token / 每页 10 条上限；无鉴权 / `pagesize` 上限 50 与越界的伪 200）、各上游已知限制（财新无标题无时间、新浪无链接且单次仅覆盖约 10 分钟、雪球与财联社系内容重合度高）、聚合与去重规则、API 与配置说明、新增平台步骤。
+- [测试] 新增 `tests/test_realtime_news.py`（53 例，适配器用固定 records/JSON 做确定性断言不打网络，覆盖缓存命中、分页、聚合排序去重与单源失败降级；雪球在 HTTP 边界打桩、保留真实分页逻辑，覆盖游标推进、游标不前进时停止、首页失败上报与后续页失败保留部分、预算耗尽、token 被拒重建重试与 bootstrap 拿不到 token；第一财经覆盖 `pagesize` 越界的伪 200 响应、VIP 空正文稿件、游标取自末条 id、`pagesize` 收敛到 50 与请求参数形状）与前端 `RealtimeNewsPage.test.tsx`、`format.test.ts`（13 例）。
+- [新功能] 实时新闻「雪球」tab 接入雪球 7×24 快讯（`/statuses/livenews/list.json`），不再是空态占位，并参与「财经热榜」聚合。因 akshare 与 NewsNow 的雪球源都只是热门股榜单而非新闻，这里直连站点接口：先 GET 行情页取匿名 `xq_a_token`（站点首页只下发 WAF cookie，取不到 token），会话进程内复用、被拒时重建重试一次；上游每页硬性只给 10 条（`count` 无效），按 `max_id` 游标翻页累计到配置条数。上游只给一个 `text` 字段，标题从 `【】` 抽取、缺失时按新浪的做法用正文开头截取，`mark=1` 映射成「重要」徽标，`created_at`（epoch 毫秒）落到 `Asia/Shanghai`。不需要雪球账号，无新增配置项。
+- [改进] 雪球平台把 `REALTIME_NEWS_FETCH_TIMEOUT_SEC` 当作整轮翻页的总预算（其余平台仍是单请求超时）：预算耗尽或中途某页失败时返回已抓到的部分，只有第一页就失败才算平台不可用；`target` 只放行 `https://` 与站内相对路径，避免上游异常值被前端渲染成外链。
+- [新功能] 实时新闻「第一财经」tab 接入第一财经 7×24 快讯（`/api/ajax/getbrieflist`），不再是空态占位，并参与「财经热榜」聚合。上游无需 cookie 与鉴权，`pagesize` 上限 50、默认条数一次请求即可拿满；超过 50 时按 `nid`（上一页最后一条 `LiveID`）游标翻页。标题取 `LiveTitle`（缺失退到 `NewsTitle`）、正文取 `LiveContent`、`CreateDate`（北京本地 naive）补 `Asia/Shanghai`、`IsImportant` 映射成「重要」徽标，站内相对链接补成绝对地址；VIP 稿件（`LiveType=1`）正文为空但保留标题。无新增配置项。
+- [修复] 第一财经快讯 `pagesize` 越界时上游返回 HTTP 200 + 逐字符拆开的错误串数组（`["p","a","g","e",...]`），适配器显式识别并报上游异常，避免被当成合法空页静默缓存成「暂无内容」。
+- [改进] 雪球与第一财经的游标翻页逻辑收敛到共用的 `_fetch_cursor_pages`（总预算、跨页去重、游标不前进即停、单页失败保留已抓部分），新增直连源只需提供「取一页」与「推下一页游标」两个回调。
+- [改进] 实时新闻移除「界面新闻」tab：该站既无可用 RSS 也不在 NewsNow 源列表内，与其长期占位展示空态，不如先从平台注册表里去掉。`available: false` 的接口契约与前端空态渲染保留（后端返回 200 + 空列表），后续新增「已知但暂无源」的平台时在注册表加一行即可；相应的降级分支改由合成占位项的单测守住。
+- [修复] 本地资讯池的两个时间语义 bug：`published_at` 原先归一化成 naive UTC，而同表 `fetched_at` 与所有时间窗 cutoff 用本地 `datetime.now()`，两者差 8 小时导致 `published_days=1` 实际只覆盖约 16 小时（周一盘前取周末消息会砍掉周五晚间那段）；`published_at` 为 NULL 的源（NewsNow 财联社热门、雪球热门股）因 SQL 里 `NULL >= x` 不为真而永久无法进入任何时间窗查询。前者统一改为本地 naive，后者改为可选的 `undated_fallback`（默认关闭，个股/大盘分析的严格语义不变）。
+- [改进] `IntelligenceRepository.list_items` 与 `GET /api/v1/intelligence/items` 新增 `published_since` / `published_until` 绝对时间窗与 `undated_fallback` 参数，均为纯增量、向后兼容；原先只有整数天，表达不了「自上一个收盘以来」。
+- [新功能] 新增内置资讯源模板「NewsNow 财联社电报」（`cls-telegraph`，实测 30 条且带发布时间）。保留现有「财联社热门」不动：仓库没有「按名字更新已有源 url」的自愈逻辑，就地改 `source_id` 对已建过源的用户无效。
+- [新功能] 新增资讯池定时采集（`NEWS_INTEL_COLLECT_ENABLED` / `NEWS_INTEL_COLLECT_INTERVAL_MINUTES`），常驻服务、`main.py --schedule` 与新增的 `10-market-brief.yml` workflow 共用同一个 builder。与「分析前自动拉取」是两条独立链路，不受其 60 分钟进程内冷却限制。新 workflow 每小时运行且含周末与节假日，用 `actions/cache` 在运行之间搬运 SQLite（runner 是一次性的，不搬就采不到东西）。
+- [新功能] 新增盘前/盘中/盘后/周末/节假日五种模式的消息面 AI 汇总：`/api/v1/market-brief/{window,latest,jobs}`，入口在 Web「实时新闻」页新增的「消息面汇总」tab（不新增导航项）。时段与时间窗由交易日历推导（盘前与休市日回看到上一个交易日收盘，盘中回看到今日开盘），结论分事实层与推断层，事实层每条都经服务端 grounding 校验、引用词查不到即整条丢弃，推断层的关注标的必须挂在已确认的板块上。定时生成 + 页面手动重跑，判重查库不另存调度状态。
+- [新功能] `src/core/trading_calendar.py` 新增 `get_previous_session_close()` 与 `get_session_open()`（均 fail-closed 返回 None）。此前仓库没有「上一交易日收盘时刻」的公开 API，时区处理散落在 `get_effective_trading_date` 内部。
+- [新功能] 新增配置 `MARKET_BRIEF_*` 九项（开关、盘前/休市日时点、盘中间隔、素材上限、缓存时长、调用次数上限、单次调用超时、保留天数），已同步 `.env.example`、Web 设置页注册表与帮助文案。
+- [文档] 新增 `docs/market-brief.md`：时段与窗口判定规则、周末与节假日为何必须分开、数据前提、输出契约的两层结构、已继承的坑（哨兵转义/全局编号/自兜 deadline/降级与 503 边界）以及与 CCTV 模块的三处刻意差异。
+- [测试] 新增 `tests/test_market_brief.py`（21 例：grounding 丢弃与级联丢弃、哨兵转义、分段保持全局编号、跨段板块合并冲突降级、签名对同长度改写敏感、空窗口 400、LLM 未配置 503、非 JSON 降级 200、挂死调用被 deadline 截断、五种模式的出稿时点判重）、`tests/test_market_brief_window.py`（14 例，含长假窗口与日历不可用降级）、`tests/test_intelligence_collector.py`（10 例）、以及 `tests/test_intelligence_service.py` 的时间基准与时间窗边界回归。
+- [修复] 消息面汇总在窗口为空时直接返回 400 并一律提示「请开启 NEWS_INTEL_COLLECT_ENABLED」。现在用户显式触发（页面按钮 / `POST /jobs`）时会**就地强制采集一轮再重试**（不受定时开关限制，与 CCTV 提交分析前先同步是同一套做法）；仍为空才报错，且提示区分「采集开关没开」与「采集已开、上游暂时没有新内容」，并附上资讯池里最新一条的时间。
+- [修复] 盘中时间窗新增下限 `MARKET_BRIEF_MIN_WINDOW_MINUTES`（默认 90 分钟）。此前刚开盘时「今日开盘至今」可能只有几分钟，素材必然过少甚至为零；现在起点会向前延长以纳入隔夜消息，`window.extended` 与 `window_hint` 会如实标注（不算降级）。
+- [修复] 消息面汇总对推理型模型必然失败：照抄 CCTV 分析骨架时漏了 `reasoning_effort` 透传，glm-5.3-flash 会把整个输出预算（6144 token，reasoning 1.7 万字符）烧在思考上，`finish_reason=length` 而正文为空，上游判为空响应 → `all_models_failed` → 每次汇总都降级成关键词。新增 `MARKET_BRIEF_REASONING_EFFORT`（默认 low，仅对 glm-5 / deepseek-v4 系透传），输出预算提到 8192；实测修复后 reasoning 降至十几字符、正文正常返回，12 events / 8 sectors / 0 丢弃。
+- [改进] 汇总降级文案不再只回显 `all_models_failed` / `empty_response` 错误码，而是指出最常见成因（推理占满输出预算）与可操作的排查方向。
+- [修复] 跨段合并时 `events` / `takeaways` / `watch_list` 未去重，同一条消息落在多个分段会产出多条几乎相同的结论、各段摘要也被直接拼接。现在按归一化标题去重、证据与术语取并集，同名标的按板块区分，相同摘要只保留一份。
 - [新功能] 完善 Futu OpenD 港股数据源接入：系统设置支持 OpenD 地址、端口和港股实时数据源优先级，保留 Longbridge、AkShare、YFinance fallback。
 - [测试] 增加 Futu 配置 schema、港股实时路由和 fallback 契约覆盖。
 
@@ -32,12 +57,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] CCTV 新闻分析改为后台任务 + 进度展示：`POST /analysis/jobs` 提交后立即返回 `job_id`，`GET /analysis/jobs/{job_id}` 返回 `phase`（读取新闻/分析新闻/汇总校验）、`total_items`、`current_chunk`/`total_chunks` 与 `progress`。前端任务状态存放在模块级 zustand store，轮询定时器不挂在组件上，因此切换路由不中断；完成后由全局挂载的通知组件弹出提示，任何路由都能收到并一键跳回结果页。
 - [修复] CCTV 新闻分析不再因模型拒答而报错：实测部分国内模型通道对涉及领导人的文字稿会返回空 `content`，而《新闻联播》头条几乎每天涉及，导致分析必然 503。现在按字数分段串行解读，某段拿不到内容时改为逐条各调一次、只跳过真正拿不到内容的条目（`coverage.skipped_item_ids`），逐条重试时产业信息更丰富的条目优先；送入模型前把这类词替换为角色占位（`CCTV_NEWS_LLM_REDACT_TERMS`），只改送给模型的副本，入库原文与前端展示的文字稿不变；长窗口按"有产业信息优先"裁剪；全部段落失败时返回 `degraded=true` + 关键词覆盖统计且 HTTP 200，仅「LLM 未配置」仍返回 503。
 - [修复] CCTV 新闻分析单次模型调用增加 deadline（`CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC`，默认 120 秒）：底层 `generate_text_with_metadata` 未暴露 timeout，litellm 在连接挂死时会无限等待，后台任务会永远停在某一段、进度条卡住且用户拿不到结果。超时按"该段没拿到内容"处理并在降级原因里报根因（超时优先于"预算耗尽"，因为预算常常正是被超时调用烧掉的）。
+- [改进] CCTV 新闻分析新增 `CCTV_NEWS_REASONING_EFFORT`（默认 `low`）：对支持该字段的 GLM-5 / DeepSeek-V4 路由降低默认推理开销，保留 JSON 与原文证据校验；可按质量需求切换 `high` / `max`。
+- [改进] CCTV 新闻分析单日范围改为“昨天”（按北京时间当前日期前一天），分析窗口无本地文字稿时自动拉取一次后再提交分析。
+- [改进] 进入 CCTV 新闻页面时自动检测最新目录；没有新闻或目录落后当前日期时自动同步最近两天，减少每日手动同步操作。
 - [新功能] 新增配置项 `CCTV_NEWS_RETENTION_DAYS`、`CCTV_NEWS_FETCH_TIMEOUT_SEC`、`CCTV_NEWS_ANALYSIS_MAX_CHARS`、`CCTV_NEWS_ANALYSIS_CACHE_HOURS`、`CCTV_NEWS_ANALYSIS_MAX_LLM_CALLS`、`CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC`、`CCTV_NEWS_LLM_REDACT_TERMS`，均有默认值，不配置也可运行。
 - [修复] 股票代码自动补全选中候选项后下拉框不消失：选中触发的 value 同步改走 `setQuerySilently`，取消挂起的防抖搜索，避免搜索回包重新打开列表。
 - [文档] 新增 `docs/cctv-news.md`，说明数据来源与时效、抓取完整性标记、AI 分析的事实约束层、API 契约、落库结构与使用注意。
 - [测试] 新增 CCTV 新闻模块回归覆盖：解析层（节目单去重/站外链接过滤/纯视频条目/部分失败标记）、同步层（幂等跳过、未完整日期冷却重试、保留期清理）、输入规范化层（脱敏不影响入库原文、自定义词表、超预算按产业信息优先裁剪）、事实约束层（无原文依据的行业与其关联个股一并丢弃、越界引用、非法股票代码置空、哨兵转义、分段沿用全局编号、跨段行业去重与证据合并）、容错层（全程拒答降级为关键词统计而非报错、单条拒答只跳过该条、调用预算上限生效）、API 层（分页查询、单日分析、后台任务进度与终态、空窗口 400、404/422/503 语义），共 39 个后端用例；前端页面 9 项交互测试（含后台任务提交、进度条阶段与百分比、单日分析入口）与通知组件 4 项测试。
 - [新功能] CCTV 新闻 AI 分析的「关注个股」每行新增「问股」「查询」两个操作：问股带「`名称(代码)`现在适合购买吗？」跳到 `/chat` 并在 Agent 就绪后自动发出（Agent 不可用时问题留在输入框），查询带 `?code=` 跳到股票查询看板并直接查这只票。问股页新增 `q=`（自定义提问，做长度与控制字符校验，非法时回落默认追问）与 `send=1`（自动发送，同一次跳转只发一次）参数；股票查询页支持 `?code=` 入口，首屏直接按该代码取数、已在页内时再次带参会换标的，非 A 股 6 位代码回落默认股。个股代码由模型推断，校验不过的行不给入口。
 - [测试] 补充跳转入口回归：CCTV 页两项跳转目标与查询串断言、问股页 `q`/`send` 预填与自动发送及非法提问回落、股票查询页 `?code=` 首屏取数/回落/同页换股，以及 `sanitizeFollowUpQuestion` 与 `buildBuyTimingPrompt` 单测。
+- [修复] 修复 Web 端 CCTV 新闻页进入后「同步新闻」按钮一直停留在「同步中」的问题：开发模式 React StrictMode 重放自动同步 effect 时，清理标志误拦截了 setSyncing(false)，同步完成后加载态无法复位。
 
 ## [3.31.0] - 2026-08-23
 

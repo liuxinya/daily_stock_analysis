@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, CandlestickChart, Gauge, Home, LogOut, MessageSquareQuote, Newspaper, Search, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, CandlestickChart, Gauge, Home, LogOut, MessageSquareQuote, Newspaper, Radio, Search, Settings2 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { SCREENING_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, screeningApi } from '../../api/screening';
 import { useAuth } from '../../contexts/AuthContext';
@@ -32,6 +32,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'stock-query', labelKey: 'layout.nav.stockQuery', to: '/stock-query', icon: CandlestickChart },
   { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
   { key: 'cctv-news', labelKey: 'layout.nav.cctvNews', to: '/cctv-news', icon: Newspaper },
+  { key: 'realtime-news', labelKey: 'layout.nav.realtimeNews', to: '/realtime-news', icon: Radio },
   { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
   { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },

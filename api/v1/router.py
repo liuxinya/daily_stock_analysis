@@ -24,7 +24,9 @@ from api.v1.endpoints import (
     health,
     history,
     intelligence,
+    market_brief,
     portfolio,
+    realtime_news,
     stocks,
     system_config,
     usage,
@@ -122,6 +124,18 @@ router.include_router(
     cctv_news.router,
     prefix="/cctv-news",
     tags=["CctvNews"]
+)
+
+router.include_router(
+    realtime_news.router,
+    prefix="/realtime-news",
+    tags=["RealtimeNews"]
+)
+
+router.include_router(
+    market_brief.router,
+    prefix="/market-brief",
+    tags=["MarketBrief"]
 )
 
 router.include_router(

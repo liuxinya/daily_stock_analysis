@@ -1,0 +1,111 @@
+name: Market Brief Collect
+
+# 资讯池增量采集。与「每日分析」workflow 分开的三个原因：
+# 1. 那个 workflow 的 cron 是 1-5（仅工作日），而消息面汇总恰恰需要周末与节假日的数据；
+# 2. 它的 concurrency group 是 stock-analysis 且 cancel-in-progress: false，共用会让
+#    采集任务排在 30 分钟的分析后面；
+# 3. 它的 env 块有 360 行，这里绝大部分用不上。
+#
+# 注意：GitHub Actions runner 是一次性的，SQLite 文件不会自然保留到下一次运行，
+# 所以下面用 actions/cache 在两次运行之间搬运数据库。缓存丢失（7 天未使用会被驱逐、
+# 或超出仓库缓存配额）时本次会从空库开始，汇总退化成"只看最近抓到的这批"，不会报错。
+# 需要长期完整历史的部署应改用常驻服务（--serve）+ NEWS_INTEL_COLLECT_ENABLED。
+
+on:
+  schedule:
+    # 每小时的第 17 分钟，含周末与节假日
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  # 串行化：缓存里是同一个 SQLite 文件，并发写没有意义
+  group: market-brief-collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ♻️ Restore intelligence pool
+        uses: actions/cache/restore@v5
+        with:
+          path: data/stock_analysis.db
+          key: intel-pool-${{ github.run_id }}
+          restore-keys: |
+            intel-pool-
+
+      - name: 📰 Collect intelligence sources
+        env:
+          DATABASE_PATH: ./data/stock_analysis.db
+          NEWS_INTEL_COLLECT_ENABLED: 'true'
+          NEWS_INTEL_RETENTION_DAYS: ${{ vars.NEWS_INTEL_RETENTION_DAYS || '30' }}
+          NEWS_INTEL_FETCH_TIMEOUT_SEC: ${{ vars.NEWS_INTEL_FETCH_TIMEOUT_SEC || '8' }}
+          NEWS_INTEL_MAX_ITEMS_PER_SOURCE: ${{ vars.NEWS_INTEL_MAX_ITEMS_PER_SOURCE || '50' }}
+          NEWSNOW_BASE_URL: ${{ vars.NEWSNOW_BASE_URL || 'https://newsnow.busiyi.world' }}
+        run: |
+          set -o pipefail
+          python scripts/collect_intelligence.py | tee collect.log
+
+      # AI 汇总是可选步骤：需要 LLM 渠道配置，且只在 vars.MARKET_BRIEF_ENABLED=true 时跑。
+      # 只想让 Actions 负责积累数据、把出稿交给常驻服务的部署，保持这个变量为空即可。
+      - name: 🧠 Generate market brief (optional)
+        if: ${{ vars.MARKET_BRIEF_ENABLED == 'true' }}
+        continue-on-error: true
+        env:
+          DATABASE_PATH: ./data/stock_analysis.db
+          MARKET_BRIEF_ENABLED: 'true'
+          MARKET_BRIEF_MAX_ITEMS: ${{ vars.MARKET_BRIEF_MAX_ITEMS || '120' }}
+          MARKET_BRIEF_ANALYSIS_CACHE_HOURS: ${{ vars.MARKET_BRIEF_ANALYSIS_CACHE_HOURS || '2' }}
+          MARKET_BRIEF_ANALYSIS_MAX_LLM_CALLS: ${{ vars.MARKET_BRIEF_ANALYSIS_MAX_LLM_CALLS || '12' }}
+          MARKET_BRIEF_CALL_TIMEOUT_SEC: ${{ vars.MARKET_BRIEF_CALL_TIMEOUT_SEC || '120' }}
+          MARKET_BRIEF_PREMARKET_TIME: ${{ vars.MARKET_BRIEF_PREMARKET_TIME || '08:40' }}
+          MARKET_BRIEF_INTRADAY_INTERVAL_MINUTES: ${{ vars.MARKET_BRIEF_INTRADAY_INTERVAL_MINUTES || '60' }}
+          MARKET_BRIEF_CLOSED_TIME: ${{ vars.MARKET_BRIEF_CLOSED_TIME || '09:30' }}
+          NEWSNOW_BASE_URL: ${{ vars.NEWSNOW_BASE_URL || 'https://newsnow.busiyi.world' }}
+          # LLM 渠道：与 00-daily-analysis.yml 同源，只透传汇总实际需要的这几组
+          GENERATION_BACKEND: ${{ vars.GENERATION_BACKEND || secrets.GENERATION_BACKEND }}
+          GENERATION_FALLBACK_BACKEND: ${{ vars.GENERATION_FALLBACK_BACKEND || secrets.GENERATION_FALLBACK_BACKEND || 'litellm' }}
+          GENERATION_BACKEND_TIMEOUT_SECONDS: ${{ vars.GENERATION_BACKEND_TIMEOUT_SECONDS || secrets.GENERATION_BACKEND_TIMEOUT_SECONDS }}
+          LITELLM_CONFIG: ${{ vars.LITELLM_CONFIG || secrets.LITELLM_CONFIG }}
+          LITELLM_CONFIG_YAML: ${{ vars.LITELLM_CONFIG_YAML || secrets.LITELLM_CONFIG_YAML }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || secrets.LITELLM_MODEL }}
+          LITELLM_FALLBACK_MODELS: ${{ vars.LITELLM_FALLBACK_MODELS || secrets.LITELLM_FALLBACK_MODELS }}
+          LLM_TEMPERATURE: ${{ vars.LLM_TEMPERATURE || secrets.LLM_TEMPERATURE }}
+          LLM_CHANNELS: ${{ vars.LLM_CHANNELS || secrets.LLM_CHANNELS }}
+        run: |
+          set -o pipefail
+          python scripts/generate_market_brief.py | tee brief.log
+
+      - name: 💾 Save intelligence pool
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: data/stock_analysis.db
+          key: intel-pool-${{ github.run_id }}
+
+      - name: 📤 Upload logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: market-brief-${{ github.run_number }}
+          path: |
+            collect.log
+            brief.log
+          if-no-files-found: ignore

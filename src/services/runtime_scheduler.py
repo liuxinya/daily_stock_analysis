@@ -19,6 +19,12 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 from src.config import Config, get_config
 from src.scheduler import Scheduler, normalize_schedule_times
+from src.services.intelligence_collector import (
+    COLLECT_TASK_NAME,
+    build_intelligence_collect_background_tasks,
+    collect_enabled,
+    collect_interval_seconds,
+)
 
 logger = logging.getLogger(__name__)
 CLI_SCHEDULER_OWNER_ENV = "DSA_CLI_SCHEDULER_OWNS_SCHEDULE"
@@ -501,7 +507,83 @@ class RuntimeSchedulerService:
     def _current_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         if self._background_tasks_provider is not None:
             return self._background_tasks_provider(config)
-        return self._current_agent_event_monitor_background_tasks(config)
+        return [
+            *self._current_agent_event_monitor_background_tasks(config),
+            *self._current_intelligence_collect_background_tasks(config),
+            *self._current_market_brief_background_tasks(config),
+        ]
+
+    def _current_market_brief_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        """消息面汇总的定时生成任务。缓存与 run_immediately 语义同上。"""
+        from src.services.market_brief_service import (
+            BRIEF_TASK_NAME,
+            BRIEF_TICK_SECONDS,
+            build_market_brief_background_tasks,
+        )
+
+        name = BRIEF_TASK_NAME
+        if not bool(getattr(config, "market_brief_enabled", False)):
+            self._background_task_cache.pop(name, None)
+            self._background_task_registered_names.discard(name)
+            return []
+
+        cached = self._background_task_cache.get(name)
+        if cached is None:
+            entries = build_market_brief_background_tasks(config, config_provider=self._reload_config)
+            if not entries:
+                self._background_task_cache.pop(name, None)
+                self._background_task_registered_names.discard(name)
+                return []
+            cached = dict(entries[0])
+            cached["name"] = name
+            self._background_task_cache[name] = cached
+
+        run_immediately = (
+            bool(cached.get("run_immediately", False))
+            and name not in self._background_task_registered_names
+        )
+        self._background_task_registered_names.add(name)
+        return [{
+            "task": cached["task"],
+            "interval_seconds": BRIEF_TICK_SECONDS,
+            "run_immediately": run_immediately,
+            "name": name,
+        }]
+
+    def _current_intelligence_collect_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        """资讯池定时采集任务。缓存与 run_immediately 语义与 event monitor 一致。"""
+        name = COLLECT_TASK_NAME
+        if not collect_enabled(config):
+            self._background_task_cache.pop(name, None)
+            self._background_task_registered_names.discard(name)
+            return []
+
+        cached = self._background_task_cache.get(name)
+        if cached is None:
+            entries = build_intelligence_collect_background_tasks(
+                config,
+                config_provider=self._reload_config,
+            )
+            if not entries:
+                self._background_task_cache.pop(name, None)
+                self._background_task_registered_names.discard(name)
+                return []
+            cached = dict(entries[0])
+            cached["name"] = name
+            self._background_task_cache[name] = cached
+
+        run_immediately = (
+            bool(cached.get("run_immediately", False))
+            and name not in self._background_task_registered_names
+        )
+        self._background_task_registered_names.add(name)
+        return [{
+            "task": cached["task"],
+            # 间隔每次 reconcile 重算，设置页改了立刻生效；task 闭包保持复用
+            "interval_seconds": collect_interval_seconds(config),
+            "run_immediately": run_immediately,
+            "name": name,
+        }]
 
     def _current_agent_event_monitor_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         name = "agent_event_monitor"

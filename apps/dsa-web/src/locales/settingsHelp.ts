@@ -423,6 +423,46 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响新闻上下文数量、时效性和报告长度。'],
     notes: ['窗口过长可能引入陈旧信息，过短可能遗漏慢发酵事件。'],
   },
+  'settings.data_source.market_brief': {
+    title: '消息面汇总',
+    summary: '按当前时段（盘前 / 盘中 / 盘后 / 周末 / 节假日）对资讯池在对应时间窗内的消息做 AI 汇总。',
+    usage: 'MARKET_BRIEF_ENABLED 控制定时自动生成；三个时点/间隔配置决定什么时候出稿；其余为成本与超时上限。',
+    valueNotes: [
+      '时段与时间窗由交易日历推导：盘前与休市日回看到上一个交易日收盘，盘中回看到今日开盘。',
+      '数据前提是 NEWS_INTEL_COLLECT_ENABLED 已开启并持续采集，否则窗口内没有素材。',
+      '开关只管定时生成；页面上的手动生成按钮不受它限制。',
+    ],
+    impact: ['影响是否自动出稿、出稿频率，以及单次汇总的 LLM 成本。'],
+    notes: [
+      '交易日历不可用时不会出稿，避免基于错误窗口生成汇总。',
+      '结论经服务端校验：引用词在资讯原文里查不到的整条丢弃，关注标的必须挂在已确认的板块上。',
+    ],
+  },
+  'settings.data_source.news_intel_collect': {
+    title: '资讯池定时采集',
+    summary: '周期性拉取已启用的资讯源并增量落库，供盘前/盘中/周末的消息面汇总按时间窗查询。',
+    usage: 'NEWS_INTEL_COLLECT_ENABLED 开关，NEWS_INTEL_COLLECT_INTERVAL_MINUTES 设间隔（分钟）。',
+    valueNotes: [
+      '与"分析前自动拉取"是两条独立链路：这条不受 60 分钟进程内冷却限制。',
+      '各家快讯接口单次只返回最近一小段（实测新浪约 10 分钟、财联社约 27 分钟），间隔大于该跨度就会漏消息。',
+    ],
+    impact: ['影响资讯池的消息完整度，进而影响消息面汇总能不能覆盖周末与盘前时段。'],
+    notes: [
+      '默认关闭，开启后会产生周期性外部请求。',
+      '只由常驻服务（--serve）或 market-brief workflow 执行；单次 CLI 分析不受影响。',
+    ],
+  },
+  'settings.data_source.realtime_news': {
+    title: '实时新闻页面',
+    summary: '控制「实时新闻」页面按平台拉取最新快讯的缓存、超时与条数上限。',
+    usage: 'REALTIME_NEWS_CACHE_TTL_SEC 设缓存时长，REALTIME_NEWS_FETCH_TIMEOUT_SEC 设单平台超时，REALTIME_NEWS_MAX_ITEMS_PER_PLATFORM 设单平台条数。',
+    valueNotes: [
+      '请求时直连上游，不落库；不配置也能用，全部有默认值。',
+      '上游更新很快（新浪单次只覆盖约 10 分钟），缓存设太长会看到过期内容。',
+    ],
+    impact: ['影响实时新闻页面的新鲜度、响应速度和单页数据量。'],
+    notes: ['超时按该平台不可用处理；「财经热榜」聚合模式下单平台失败只做标注，不影响其他平台。'],
+  },
   'settings.notification.FEISHU_WEBHOOK_URL': {
     title: '飞书群机器人 Webhook',
     summary: '配置飞书自定义群机器人，用于把分析报告推送到指定飞书群。',
@@ -1650,6 +1690,46 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['The effective window is constrained by both values.'],
     impact: ['Affects news context size, freshness, and report length.'],
     notes: ['Too wide can include stale news; too narrow can miss slow-moving events.'],
+  },
+  'settings.data_source.market_brief': {
+    title: 'Market Brief',
+    summary: 'AI summary of the intelligence pool for the current session phase (pre-market / intraday / post-market / weekend / holiday).',
+    usage: 'MARKET_BRIEF_ENABLED gates scheduled generation; the time/interval settings decide when; the rest cap cost and timeouts.',
+    valueNotes: [
+      'Phase and window come from the trading calendar: pre-market and closed days look back to the previous close, intraday to today\'s open.',
+      'Requires NEWS_INTEL_COLLECT_ENABLED so the pool actually has items in the window.',
+      'The toggle only affects scheduled generation; the manual button on the page always works.',
+    ],
+    impact: ['Controls whether briefs are produced automatically, how often, and the LLM cost per brief.'],
+    notes: [
+      'No brief is produced when the trading calendar is unavailable, to avoid summarising a wrong window.',
+      'Claims are server-validated: entries whose cited terms are absent from the source text are dropped, and watch items must hang off a confirmed sector.',
+    ],
+  },
+  'settings.data_source.news_intel_collect': {
+    title: 'Intelligence Scheduled Collection',
+    summary: 'Periodically fetches enabled intelligence sources and appends them to the local pool, so time-window brief queries have data.',
+    usage: 'NEWS_INTEL_COLLECT_ENABLED toggles it; NEWS_INTEL_COLLECT_INTERVAL_MINUTES sets the interval.',
+    valueNotes: [
+      'Independent of the pre-analysis auto fetch: this path is not subject to the 60-minute in-process cooldown.',
+      'Upstream flash-news endpoints only return a short recent window (measured: Sina ~10 min, CLS ~27 min); a longer interval silently drops items.',
+    ],
+    impact: ['Determines how complete the intelligence pool is, and therefore whether the brief can cover weekend and pre-market windows.'],
+    notes: [
+      'Disabled by default; enabling it produces recurring outbound requests.',
+      'Runs only from the resident service (--serve) or the market-brief workflow; one-off CLI analysis is unaffected.',
+    ],
+  },
+  'settings.data_source.realtime_news': {
+    title: 'Realtime News Page',
+    summary: 'Controls cache TTL, upstream timeout and per-platform item cap for the realtime news page.',
+    usage: 'REALTIME_NEWS_CACHE_TTL_SEC sets cache TTL, REALTIME_NEWS_FETCH_TIMEOUT_SEC the per-platform timeout, REALTIME_NEWS_MAX_ITEMS_PER_PLATFORM the item cap.',
+    valueNotes: [
+      'Fetched live per request and never persisted; all values have defaults so no configuration is required.',
+      'Upstreams update fast (Sina returns only ~10 minutes per call), so a long TTL shows stale items.',
+    ],
+    impact: ['Affects freshness, response latency and page size of the realtime news page.'],
+    notes: ['A timeout marks that platform unavailable; in aggregate mode a single failed platform is only flagged and does not affect the others.'],
   },
   'settings.notification.FEISHU_WEBHOOK_URL': {
     title: 'Feishu Webhook URL',

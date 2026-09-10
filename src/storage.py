@@ -360,6 +360,38 @@ class CctvNewsAnalysis(Base):
     )
 
 
+class MarketBriefAnalysis(Base):
+    """盘前/盘中/周末消息面汇总的 AI 分析结果。
+
+    ``evidence_signature`` 是"参与汇总的资讯条目内容 + 模型 + 时段"的指纹，用于命中复用。
+    与 CCTV 那张表不同，指纹吃的是条目**内容哈希**而不是长度：资讯池条目会被 upsert
+    回填 summary/published_at，只吃长度的话同长度改写不会失效缓存。
+
+    ``mode`` + ``window_start`` 也是"这个窗口今天是否已经生成过"的判断依据，
+    定时生成任务靠它避免重复出稿，不另存调度状态。
+    """
+
+    __tablename__ = 'market_brief_analyses'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mode = Column(String(32), nullable=False, index=True)
+    window_start = Column(DateTime, nullable=False, index=True)
+    window_end = Column(DateTime, nullable=False, index=True)
+    item_count = Column(Integer, nullable=False, default=0)
+    model = Column(String(120))
+    evidence_signature = Column(String(64), nullable=False, index=True)
+    payload = Column(Text, nullable=False)
+    prompt_tokens = Column(Integer)
+    completion_tokens = Column(Integer)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_market_brief_mode_window', 'mode', 'window_start', 'window_end'),
+        Index('ix_market_brief_signature_created', 'evidence_signature', 'created_at'),
+        Index('ix_market_brief_mode_created', 'mode', 'created_at'),
+    )
+
+
 class FundamentalSnapshot(Base):
     """
     基本面上下文快照（P0 write-only）。

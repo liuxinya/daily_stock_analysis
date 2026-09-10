@@ -567,5 +567,102 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             self.assertEqual(session.query(IntelligenceItem).count(), 0)
 
 
+class IntelligenceTimeBaseTestCase(unittest.TestCase):
+    """published_at 的时间基准与时间窗过滤。
+
+    这两处曾经不自洽：published_at 归一化成 naive UTC，而 fetched_at 和所有 cutoff
+    用本地 datetime.now()，导致 published_days=1 实际只覆盖约 16 小时；无发布时间的
+    条目又因为 SQL 里 NULL 比较不为真而被永久排除。
+    """
+
+    def setUp(self) -> None:
+        self._temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._temp_dir.cleanup)
+        self._env_snapshot = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(self._env_snapshot)))
+        os.environ["DATABASE_PATH"] = os.path.join(self._temp_dir.name, "timebase.db")
+        Config._instance = None
+        DatabaseManager.reset_instance()
+        self.addCleanup(DatabaseManager.reset_instance)
+        self.repo = IntelligenceRepository()
+
+    def _save(self, title: str, *, published_at, fetched_at) -> None:
+        self.repo.upsert_items([{
+            "source_name": "probe", "source_type": "rss", "title": title,
+            "summary": title, "url": f"https://news.example.com/{quote(title)}",
+            "source": "probe", "published_at": published_at, "fetched_at": fetched_at,
+            "scope_type": "market", "scope_value": None, "market": "cn",
+        }])
+
+    def _titles(self, **kwargs) -> set:
+        rows, _ = self.repo.list_items(page_size=100, **kwargs)
+        return {row.title for row in rows}
+
+    def test_offset_aware_pubdate_lands_on_the_same_base_as_fetched_at(self) -> None:
+        """带偏移的发布时间必须与 fetched_at 同基，否则时间窗会整体错位。"""
+        for raw in ("Mon, 07 Sep 2026 19:30:00 +0800", "2026-09-07T19:30:00+08:00"):
+            parsed = IntelligenceService._parse_datetime(raw)
+            expected = datetime(2026, 9, 7, 19, 30).astimezone().replace(tzinfo=None)
+            self.assertEqual(parsed, expected, raw)
+            self.assertIsNone(parsed.tzinfo, raw)
+
+    def test_epoch_millis_lands_on_local_base(self) -> None:
+        timestamp = 1757243805
+        parsed = IntelligenceService._parse_datetime_or_timestamp(timestamp * 1000)
+        self.assertEqual(parsed, datetime.fromtimestamp(timestamp))
+        self.assertIsNone(parsed.tzinfo)
+
+    def test_item_published_20_hours_ago_is_inside_a_one_day_window(self) -> None:
+        """这正是旧的 8 小时偏移漏掉的区间：20 小时前的条目必须命中 1 天窗口。"""
+        now = datetime.now()
+        self._save("twenty-hours-ago", published_at=now - timedelta(hours=20), fetched_at=now)
+        self._save("eight-days-ago", published_at=now - timedelta(days=8), fetched_at=now)
+        self.assertEqual(self._titles(published_days=1), {"twenty-hours-ago"})
+
+    def test_undated_items_need_the_explicit_fallback(self) -> None:
+        now = datetime.now()
+        self._save("undated-fresh", published_at=None, fetched_at=now)
+        self._save("undated-stale", published_at=None, fetched_at=now - timedelta(days=5))
+        self._save("dated-fresh", published_at=now - timedelta(hours=2), fetched_at=now)
+
+        # 默认严格：个股/大盘分析要求证据有可信发布时间
+        self.assertEqual(self._titles(published_days=1), {"dated-fresh"})
+        # 开启兜底：热榜类源（财联社热门、雪球）才能参与消息面汇总
+        self.assertEqual(
+            self._titles(published_days=1, undated_fallback=True),
+            {"dated-fresh", "undated-fresh"},
+        )
+        # 兜底也不该把过期条目拉回来
+        self.assertNotIn("undated-stale", self._titles(published_days=1, undated_fallback=True))
+
+    def test_absolute_window_bounds(self) -> None:
+        """绝对时间窗用于"自上一个收盘以来"这类需求，整数天表达不了。"""
+        now = datetime.now()
+        self._save("before-window", published_at=now - timedelta(hours=6), fetched_at=now)
+        self._save("inside-window", published_at=now - timedelta(hours=3), fetched_at=now)
+        self._save("after-window", published_at=now - timedelta(minutes=10), fetched_at=now)
+
+        self.assertEqual(
+            self._titles(published_since=now - timedelta(hours=4)),
+            {"inside-window", "after-window"},
+        )
+        self.assertEqual(
+            self._titles(
+                published_since=now - timedelta(hours=4),
+                published_until=now - timedelta(hours=1),
+            ),
+            {"inside-window"},
+        )
+
+    def test_absolute_window_takes_precedence_over_days(self) -> None:
+        now = datetime.now()
+        self._save("three-days-ago", published_at=now - timedelta(days=3), fetched_at=now)
+        self.assertEqual(self._titles(published_days=1), set())
+        self.assertEqual(
+            self._titles(published_days=1, published_since=now - timedelta(days=5)),
+            {"three-days-ago"},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -157,14 +158,23 @@ def list_items(
     scope_value: Optional[str] = Query(None),
     market: Optional[str] = Query(None),
     query: Optional[str] = Query(None),
-    days: Optional[int] = Query(None, ge=1),
+    days: Optional[int] = Query(None, ge=1, description="fetched_at 窗口（天）"),
+    published_days: Optional[int] = Query(None, ge=1, description="published_at 窗口（天）"),
+    published_since: Optional[datetime] = Query(None, description="发布时间下界，优先于 published_days"),
+    published_until: Optional[datetime] = Query(None, description="发布时间上界"),
+    undated_fallback: bool = Query(
+        False,
+        description="上游未提供发布时间的条目是否用 fetched_at 参与时间窗过滤",
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
 ) -> IntelligenceItemListResponse:
     try:
         return IntelligenceItemListResponse(**IntelligenceService().list_items(
             scope_type=scope_type, scope_value=scope_value, market=market,
-            query=query, days=days, page=page, page_size=page_size,
+            query=query, days=days, published_days=published_days,
+            published_since=published_since, published_until=published_until,
+            undated_fallback=undated_fallback, page=page, page_size=page_size,
         ))
     except Exception as exc:
         raise _internal_error("List intelligence items failed", exc)

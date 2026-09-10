@@ -107,6 +107,16 @@ class CctvNewsService:
             start_date = EARLIEST_SUPPORTED_DAY
         return start_date, end_date
 
+    def resolve_analysis_window(self, days: Optional[int]) -> Tuple[date, date]:
+        """Resolve an analysis window; the single-day option means yesterday."""
+        span = DEFAULT_LIST_DAYS if days is None else int(days)
+        if span == 1:
+            target = self.today() - timedelta(days=1)
+            if target < EARLIEST_SUPPORTED_DAY:
+                target = EARLIEST_SUPPORTED_DAY
+            return target, target
+        return self.resolve_window(span)
+
     # === 同步 ===
 
     def sync_recent(self, *, days: Optional[int] = None, force: bool = False) -> Dict[str, Any]:

@@ -227,6 +227,33 @@ class TestAnalyzerGenerateText:
             return_generation_result=True,
         )
 
+    def test_generate_text_with_metadata_forwards_reasoning_effort(self):
+        from src.llm.generation_backend import GenerationResult
+
+        analyzer = self._make_analyzer()
+        generation_result = GenerationResult(
+            text="复盘",
+            provider="openai",
+            model="openai/glm-5.3-flash",
+            backend="litellm",
+            usage={"total_tokens": 3},
+        )
+        with patch.object(analyzer, "_call_litellm", return_value=generation_result) as mock_call:
+            result = analyzer.generate_text_with_metadata(
+                "写一份复盘", reasoning_effort="low"
+            )
+
+        assert result is generation_result
+        mock_call.assert_called_once_with(
+            "写一份复盘",
+            generation_config={
+                "max_tokens": 2048,
+                "temperature": 0.7,
+                "reasoning_effort": "low",
+            },
+            return_generation_result=True,
+        )
+
     def test_generate_text_with_metadata_resolves_router_alias_provider(self):
         analyzer = self._make_analyzer()
         analyzer._config_override.generation_backend = "litellm"

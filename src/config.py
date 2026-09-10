@@ -995,6 +995,8 @@ class Config:
     news_intel_fetch_timeout_sec: float = 8.0  # 单个资讯源拉取超时
     news_intel_max_items_per_source: int = 50  # 单次每个资讯源最多采集条数
     news_intel_auto_fetch_enabled: bool = False  # 是否在分析前自动初始化并拉取本地资讯源
+    news_intel_collect_enabled: bool = False  # 是否启用独立的资讯池定时采集（不受分析前 60 分钟冷却限制）
+    news_intel_collect_interval_minutes: int = 5  # 定时采集间隔（分钟）；上游快讯窗口很短，间隔过长会漏消息
     newsnow_base_url: str = "https://newsnow.busiyi.world"  # NewsNow HTTP API base URL (数据源侧，不影响 LLM/provider base URL)
     bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
 
@@ -1005,7 +1007,26 @@ class Config:
     cctv_news_analysis_cache_hours: int = 12  # 同一批新闻的分析结果复用时长（小时）
     cctv_news_analysis_max_llm_calls: int = 24  # 单次分析允许的模型调用次数（分段+拒答二分会放大）
     cctv_news_analysis_call_timeout_sec: int = 120  # 单次模型调用超时；底层不暴露 timeout，必须自己兜
+    cctv_news_reasoning_effort: str = "low"  # CCTV 新闻分析推理强度：low/high/max
     cctv_news_llm_redact_terms: str = ""  # 送入 LLM 前需替换的词，格式 词:占位,词；留空用内置词表
+
+    # === 实时新闻（多平台快讯浏览）配置 ===
+    realtime_news_cache_ttl_sec: float = 60.0  # 单平台快讯的进程内缓存时长；上游更新很快，不宜过长
+    realtime_news_fetch_timeout_sec: float = 8.0  # 单平台上游请求超时
+    realtime_news_max_items_per_platform: int = 50  # 单平台单次最多返回条数
+
+    # === 消息面汇总（盘前/盘中/周末 AI 汇总）配置 ===
+    market_brief_enabled: bool = False  # 是否启用定时生成消息面汇总（手动触发不受此开关限制）
+    market_brief_max_items: int = 120  # 单次汇总最多送入模型的资讯条数
+    market_brief_min_window_minutes: int = 90  # 时间窗下限（分钟）；刚开盘时把起点向前延长以纳入隔夜消息
+    market_brief_analysis_cache_hours: int = 2  # 同一批消息 + 同一模型的汇总结果复用时长（小时）
+    market_brief_analysis_max_llm_calls: int = 12  # 单次汇总允许的模型调用次数上限
+    market_brief_call_timeout_sec: int = 120  # 单次模型调用超时；底层不暴露 timeout，必须自己兜
+    market_brief_reasoning_effort: str = "low"  # 推理强度：low/high/max；不限会让推理型模型把输出预算全烧在思考上
+    market_brief_premarket_time: str = "08:40"  # 盘前汇总的生成时点（市场本地时间 HH:MM）
+    market_brief_intraday_interval_minutes: int = 60  # 盘中汇总的生成间隔（分钟）
+    market_brief_closed_time: str = "09:30"  # 周末/节假日汇总的生成时点
+    market_brief_retention_days: int = 30  # 汇总结果保留天数
 
     # === Agent 模式配置 ===
     agent_backend: str = "auto"
@@ -1920,6 +1941,17 @@ class Config:
                 os.getenv('NEWS_INTEL_AUTO_FETCH_ENABLED'),
                 False,
             ),
+            news_intel_collect_enabled=parse_env_bool(
+                os.getenv('NEWS_INTEL_COLLECT_ENABLED'),
+                False,
+            ),
+            news_intel_collect_interval_minutes=parse_env_int(
+                os.getenv('NEWS_INTEL_COLLECT_INTERVAL_MINUTES'),
+                5,
+                field_name='NEWS_INTEL_COLLECT_INTERVAL_MINUTES',
+                minimum=1,
+                maximum=1440,
+            ),
             newsnow_base_url=((os.getenv('NEWSNOW_BASE_URL') or '').strip().rstrip('/') or 'https://newsnow.busiyi.world'),
             bias_threshold=parse_env_float(os.getenv('BIAS_THRESHOLD'), 5.0, field_name='BIAS_THRESHOLD', minimum=1.0),
             cctv_news_retention_days=parse_env_int(
@@ -1958,12 +1990,71 @@ class Config:
                 maximum=200,
             ),
             cctv_news_llm_redact_terms=((os.getenv('CCTV_NEWS_LLM_REDACT_TERMS') or '').strip()),
+            realtime_news_cache_ttl_sec=parse_env_float(
+                os.getenv('REALTIME_NEWS_CACHE_TTL_SEC'),
+                60.0,
+                field_name='REALTIME_NEWS_CACHE_TTL_SEC',
+                minimum=0.0,
+                maximum=600.0,
+            ),
+            realtime_news_fetch_timeout_sec=parse_env_float(
+                os.getenv('REALTIME_NEWS_FETCH_TIMEOUT_SEC'),
+                8.0,
+                field_name='REALTIME_NEWS_FETCH_TIMEOUT_SEC',
+                minimum=1.0,
+                maximum=30.0,
+            ),
+            realtime_news_max_items_per_platform=parse_env_int(
+                os.getenv('REALTIME_NEWS_MAX_ITEMS_PER_PLATFORM'),
+                50,
+                field_name='REALTIME_NEWS_MAX_ITEMS_PER_PLATFORM',
+                minimum=1,
+                maximum=200,
+            ),
+            market_brief_enabled=parse_env_bool(os.getenv('MARKET_BRIEF_ENABLED'), False),
+            market_brief_max_items=parse_env_int(
+                os.getenv('MARKET_BRIEF_MAX_ITEMS'), 120,
+                field_name='MARKET_BRIEF_MAX_ITEMS', minimum=5, maximum=500,
+            ),
+            market_brief_min_window_minutes=parse_env_int(
+                os.getenv('MARKET_BRIEF_MIN_WINDOW_MINUTES'), 90,
+                field_name='MARKET_BRIEF_MIN_WINDOW_MINUTES', minimum=0, maximum=1440,
+            ),
+            market_brief_analysis_cache_hours=parse_env_int(
+                os.getenv('MARKET_BRIEF_ANALYSIS_CACHE_HOURS'), 2,
+                field_name='MARKET_BRIEF_ANALYSIS_CACHE_HOURS', minimum=0, maximum=72,
+            ),
+            market_brief_analysis_max_llm_calls=parse_env_int(
+                os.getenv('MARKET_BRIEF_ANALYSIS_MAX_LLM_CALLS'), 12,
+                field_name='MARKET_BRIEF_ANALYSIS_MAX_LLM_CALLS', minimum=1, maximum=60,
+            ),
+            market_brief_call_timeout_sec=parse_env_int(
+                os.getenv('MARKET_BRIEF_CALL_TIMEOUT_SEC'), 120,
+                field_name='MARKET_BRIEF_CALL_TIMEOUT_SEC', minimum=10, maximum=600,
+            ),
+            market_brief_reasoning_effort=((os.getenv('MARKET_BRIEF_REASONING_EFFORT') or '').strip().lower() or 'low'),
+            market_brief_premarket_time=((os.getenv('MARKET_BRIEF_PREMARKET_TIME') or '').strip() or '08:40'),
+            market_brief_intraday_interval_minutes=parse_env_int(
+                os.getenv('MARKET_BRIEF_INTRADAY_INTERVAL_MINUTES'), 60,
+                field_name='MARKET_BRIEF_INTRADAY_INTERVAL_MINUTES', minimum=10, maximum=240,
+            ),
+            market_brief_closed_time=((os.getenv('MARKET_BRIEF_CLOSED_TIME') or '').strip() or '09:30'),
+            market_brief_retention_days=parse_env_int(
+                os.getenv('MARKET_BRIEF_RETENTION_DAYS'), 30,
+                field_name='MARKET_BRIEF_RETENTION_DAYS', minimum=3, maximum=365,
+            ),
             cctv_news_analysis_call_timeout_sec=parse_env_int(
                 os.getenv('CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC'),
                 120,
                 field_name='CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC',
                 minimum=10,
                 maximum=600,
+            ),
+            cctv_news_reasoning_effort=(
+                (os.getenv('CCTV_NEWS_REASONING_EFFORT') or 'low').strip().lower()
+                if (os.getenv('CCTV_NEWS_REASONING_EFFORT') or 'low').strip().lower()
+                in {'low', 'high', 'max'}
+                else 'low'
             ),
             agent_backend=(os.getenv('AGENT_BACKEND', 'auto') or 'auto').strip().lower(),
             agent_generation_backend=agent_generation_backend,

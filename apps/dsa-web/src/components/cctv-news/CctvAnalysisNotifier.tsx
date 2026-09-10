@@ -50,7 +50,7 @@ export const CctvAnalysisNotifier: React.FC = () => {
   const canOpen = notice.tone !== 'error';
 
   return (
-    <div className="fixed bottom-6 right-6 z-[60] w-[min(92vw,22rem)] animate-slide-in-right">
+    <div className="fixed top-6 right-6 z-[60] w-[min(92vw,22rem)] animate-slide-in-right">
       <div className={cn('glass-panel-lg flex gap-3 border p-4 shadow-soft-card-strong', tone.border)}>
         <div className="mt-0.5 shrink-0">{tone.icon}</div>
         <div className="min-w-0 flex-1">
@@ -63,7 +63,7 @@ export const CctvAnalysisNotifier: React.FC = () => {
                 className="home-accent-link text-sm"
                 onClick={() => {
                   dismissNotice();
-                  navigate('/cctv-news');
+                  navigate('/cctv-news?tab=analysis');
                 }}
               >
                 查看结果

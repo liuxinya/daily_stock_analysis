@@ -817,11 +817,13 @@ class CctvNewsAnalyzer:
         )
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cctv-llm")
         try:
+            reasoning_effort = self._resolve_reasoning_effort(state.model)
             future = executor.submit(
                 self.analyzer.generate_text_with_metadata,
                 prompt,
                 max_tokens=ANALYSIS_MAX_OUTPUT_TOKENS,
                 temperature=ANALYSIS_TEMPERATURE,
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
             )
             try:
                 generation = future.result(timeout=timeout_seconds)
@@ -893,6 +895,16 @@ class CctvNewsAnalyzer:
             tokens=self._total_tokens(state.usage),
         )
         return text
+
+    def _resolve_reasoning_effort(self, model: Optional[str]) -> Optional[str]:
+        """Return the configured effort only for model families that support it."""
+        effort = str(getattr(self.config, "cctv_news_reasoning_effort", "low") or "").strip().lower()
+        if effort not in {"low", "high", "max"}:
+            return None
+        model_name = str(model or "").strip().lower().rsplit("/", 1)[-1]
+        if model_name.startswith(("glm-5", "deepseek-v4")):
+            return effort
+        return None
 
     @staticmethod
     def _degraded_reason(state: "_CollectState") -> str:

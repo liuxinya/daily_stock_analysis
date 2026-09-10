@@ -1670,6 +1670,26 @@ def main() -> int:
                     "name": "agent_event_monitor",
                 })
 
+            # 资讯池定时采集：与常驻服务走同一个 builder，避免两处实现漂移
+            from src.services.intelligence_collector import (
+                build_intelligence_collect_background_tasks,
+            )
+
+            background_tasks.extend(build_intelligence_collect_background_tasks(
+                config,
+                config_provider=_reload_runtime_config,
+            ))
+
+            # 消息面汇总定时生成：同样与常驻服务共用 builder
+            from src.services.market_brief_service import (
+                build_market_brief_background_tasks,
+            )
+
+            background_tasks.extend(build_market_brief_background_tasks(
+                config,
+                config_provider=_reload_runtime_config,
+            ))
+
             schedule_kwargs = {
                 "task": scheduled_task,
                 "schedule_time": config.schedule_time,

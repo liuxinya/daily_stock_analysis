@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,7 +37,7 @@ const parsedError = {
 
 const dayList = {
   startDate: '2026-07-28',
-  endDate: '2026-08-26',
+  endDate: '2026-08-25',
   totalDays: 2,
   totalItems: 3,
   days: [
@@ -198,8 +199,8 @@ beforeEach(() => {
 });
 
 /** 个股表的“问股”“查询”会调 navigate，所以整页都要跑在 Router 里。 */
-const renderPage = () => render(
-  <MemoryRouter initialEntries={['/cctv-news']}>
+const renderPage = (initialEntries: string[] = ['/cctv-news']) => render(
+  <MemoryRouter initialEntries={initialEntries}>
     <Routes>
       <Route path="/cctv-news" element={<CctvNewsPage />} />
       <Route path="/chat" element={<div>chat-page</div>} />
@@ -210,6 +211,31 @@ const renderPage = () => render(
 );
 
 describe('CctvNewsPage', () => {
+  it('auto-syncs the latest days when the news directory is stale', async () => {
+    const staleDayList = {
+      startDate: '2026-07-29',
+      endDate: '2026-08-26',
+      totalDays: 0,
+      totalItems: 0,
+      days: [],
+    };
+    listDays.mockResolvedValueOnce(staleDayList).mockResolvedValueOnce(dayList);
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(sync).toHaveBeenCalledWith({ days: 2 });
+    });
+    expect(await screen.findByText('国务院部署人工智能+行动')).toBeInTheDocument();
+    expect(listDays).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens the analysis tab when requested by the result notification', async () => {
+    renderPage(['/cctv-news?tab=analysis']);
+
+    expect(await screen.findByRole('tab', { name: /AI 新闻分析/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
   it('loads the day rail and the latest day transcripts', async () => {
     renderPage();
 
@@ -369,14 +395,31 @@ describe('CctvNewsPage', () => {
     expect(screen.getByText('CCTV 新闻接口不可用')).toBeInTheDocument();
   });
 
-  it('offers a first-run sync when nothing is stored yet', async () => {
+  it('auto-syncs when nothing is stored yet', async () => {
     listDays.mockResolvedValueOnce({ ...dayList, totalDays: 0, totalItems: 0, days: [] });
 
     renderPage();
 
-    fireEvent.click(await screen.findByRole('button', { name: '同步最近 30 天' }));
+    await waitFor(() => expect(sync).toHaveBeenCalledWith({ days: 2 }));
+    expect(await screen.findByText('国务院部署人工智能+行动')).toBeInTheDocument();
+  });
 
-    await waitFor(() => expect(sync).toHaveBeenCalledWith({ days: 30 }));
-    expect(await screen.findByText('同步完成')).toBeInTheDocument();
+  it('releases the syncing state after auto-sync even when StrictMode replays the effect', async () => {
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={['/cctv-news']}>
+          <Routes>
+            <Route path="/cctv-news" element={<CctvNewsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    await waitFor(() => expect(sync).toHaveBeenCalled());
+    // 自动同步完成后按钮必须回到可点击的“同步新闻”，不能停在“同步中”。
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /同步新闻/ })).toBeEnabled();
+    });
+    expect(screen.queryByText('同步中')).not.toBeInTheDocument();
   });
 });

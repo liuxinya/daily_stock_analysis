@@ -302,6 +302,79 @@ def resolve_historical_daily_bar_date(
         return None
 
 
+def get_previous_session_close(
+    market: Optional[str], current_time: Optional[datetime] = None
+) -> Optional[datetime]:
+    """Resolve the close time of the last completed trading session.
+
+    Returns a market-local timezone-aware datetime, or ``None`` when the
+    calendar is unavailable or the market is unknown.
+
+    "Last completed" follows the same rule as get_effective_trading_date():
+    on a trading day before the close, the previous session is the last
+    completed one; after the close, today's session counts.
+
+    Unlike get_effective_trading_date() this is **fail-closed** (returns None
+    instead of guessing a natural date). Callers use it to bound a news window
+    such as "everything published since Friday's close", and silently shifting
+    that boundary by a day would be worse than admitting the calendar is down.
+    """
+    market_now = get_market_now(market, current_time=current_time)
+
+    if not _XCALS_AVAILABLE:
+        return None
+
+    ex = MARKET_EXCHANGE.get(market or "")
+    tz_name = MARKET_TIMEZONE.get(market or "")
+    if not ex or not tz_name:
+        return None
+
+    try:
+        cal = xcals.get_calendar(ex)
+        local_date = market_now.date()
+        session = cal.date_to_session(local_date, direction="previous")
+        close_local = _as_market_datetime(cal.session_close(session), tz_name)
+        if close_local is None:
+            return None
+        # 交易日盘中/盘前：今天这根还没收完，上一个完整收盘在前一个 session
+        if cal.is_session(local_date) and market_now < close_local:
+            previous = cal.previous_session(session)
+            return _as_market_datetime(cal.session_close(previous), tz_name)
+        return close_local
+    except Exception as e:
+        logger.warning("trading_calendar.get_previous_session_close fail-closed: %s", e)
+        return None
+
+
+def get_session_open(
+    market: Optional[str], current_time: Optional[datetime] = None
+) -> Optional[datetime]:
+    """Resolve today's session open time, or ``None`` when today is not a session.
+
+    Fail-closed for the same reason as get_previous_session_close().
+    """
+    market_now = get_market_now(market, current_time=current_time)
+
+    if not _XCALS_AVAILABLE:
+        return None
+
+    ex = MARKET_EXCHANGE.get(market or "")
+    tz_name = MARKET_TIMEZONE.get(market or "")
+    if not ex or not tz_name:
+        return None
+
+    try:
+        cal = xcals.get_calendar(ex)
+        local_date = market_now.date()
+        if not cal.is_session(local_date):
+            return None
+        session = cal.date_to_session(local_date, direction="previous")
+        return _as_market_datetime(cal.session_open(session), tz_name)
+    except Exception as e:
+        logger.warning("trading_calendar.get_session_open fail-closed: %s", e)
+        return None
+
+
 def _as_market_datetime(value: Any, tz_name: str) -> Optional[datetime]:
     """
     Convert exchange-calendar timestamps into market-local datetimes.

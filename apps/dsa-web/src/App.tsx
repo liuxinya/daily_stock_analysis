@@ -20,6 +20,7 @@ const LoginPage = lazy(() => import('./pages/LoginPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
 const CctvNewsPage = lazy(() => import('./pages/CctvNewsPage'));
+const RealtimeNewsPage = lazy(() => import('./pages/RealtimeNewsPage'));
 const PortfolioPage = lazy(() => import('./pages/PortfolioPage'));
 const DecisionSignalsPage = lazy(() => import('./pages/DecisionSignalsPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
@@ -87,6 +88,7 @@ const AppContent: React.FC = () => {
         <Route path="/stock-query" element={<StockQueryPage />} />
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/cctv-news" element={<CctvNewsPage />} />
+        <Route path="/realtime-news" element={<RealtimeNewsPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/decision-signals" element={<DecisionSignalsPage />} />
         <Route path="/screening" element={<StockScreeningPage />} />

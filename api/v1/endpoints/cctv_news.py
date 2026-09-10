@@ -141,8 +141,34 @@ def _resolve_analysis_window(service: CctvNewsService, payload: CctvNewsAnalysis
     if payload.news_date is not None:
         return payload.news_date, payload.news_date, 1
     range_days = payload.range_days or 7
-    start_date, end_date = service.resolve_window(range_days)
+    start_date, end_date = service.resolve_analysis_window(range_days)
     return start_date, end_date, range_days
+
+
+def _ensure_analysis_items(
+    service: CctvNewsService,
+    start_date: date,
+    end_date: date,
+) -> None:
+    """Fetch the requested window once when analysis has no local source data."""
+    if service.repo.list_items_for_window(start_date, end_date, limit=1):
+        return
+
+    logger.info(
+        "分析窗口无新闻数据，自动拉取一次: %s 至 %s",
+        start_date.isoformat(),
+        end_date.isoformat(),
+    )
+    try:
+        service.sync_range(start_date, end_date, force=True)
+    except Exception as exc:  # noqa: BLE001 - convert provider failure to API validation error
+        logger.warning("分析前自动拉取新闻失败: %s", sanitize_diagnostic_text(str(exc), max_length=200))
+        raise CctvNewsServiceError("分析窗口暂无新闻，自动拉取失败，请稍后重试") from exc
+
+    if not service.repo.list_items_for_window(start_date, end_date, limit=1):
+        raise CctvNewsServiceError(
+            f"{start_date.isoformat()} 至 {end_date.isoformat()} 窗口内没有文字稿，自动拉取后仍无数据"
+        )
 
 
 @router.post(
@@ -160,6 +186,7 @@ def analyze_news(request: Optional[CctvNewsAnalysisRequest] = None) -> CctvNewsA
     try:
         service = CctvNewsService()
         start_date, end_date, range_days = _resolve_analysis_window(service, payload)
+        _ensure_analysis_items(service, start_date, end_date)
         result = CctvNewsAnalyzer().analyze(
             start_date=start_date,
             end_date=end_date,
@@ -188,13 +215,8 @@ def submit_analysis_job(
     try:
         service = CctvNewsService()
         start_date, end_date, range_days = _resolve_analysis_window(service, payload)
-        # 提交前先确认窗口内确有新闻，把"没数据"这种确定性错误当场以 400 反馈，
-        # 而不是让后台任务失败后用户才看到。
-        available = service.repo.list_items_for_window(start_date, end_date, limit=1)
-        if not available:
-            raise CctvNewsServiceError(
-                f"{start_date.isoformat()} 至 {end_date.isoformat()} 窗口内没有文字稿，请先同步新闻"
-            )
+        # 分析窗口为空时自动拉取一次，仍无数据才以 400 返回。
+        _ensure_analysis_items(service, start_date, end_date)
         job = CctvNewsAnalysisJobManager.get_instance().submit(
             range_days=range_days,
             start_date=start_date,

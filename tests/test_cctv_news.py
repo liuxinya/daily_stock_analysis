@@ -549,6 +549,10 @@ class CctvNewsServiceTest(CctvNewsDatabaseTestCase):
         with self.assertRaises(CctvNewsServiceError):
             service.resolve_window(9999)
 
+        analysis_start, analysis_end = service.resolve_analysis_window(1)
+        self.assertEqual(analysis_start, today - timedelta(days=1))
+        self.assertEqual(analysis_end, today - timedelta(days=1))
+
         self._seed(today - timedelta(days=1), count=2)
         self._seed(today - timedelta(days=400), count=2)
         days = service.list_days(days=30)
@@ -702,6 +706,33 @@ class CctvNewsAnalyzerTest(CctvNewsDatabaseTestCase):
         self.assertFalse(result["degraded"])
         self.assertEqual(result["item_count"], 1)
         self.assertEqual(result["range_days"], 1)
+
+    def test_reasoning_effort_is_forwarded_for_supported_model(self) -> None:
+        """CCTV analysis uses the low-effort path without changing other prompts."""
+        import dataclasses
+
+        from src.services.cctv_news_analyzer import CctvNewsAnalyzer
+
+        today = date(2026, 8, 25)
+        self._seed(today, count=1)
+        analyzer = _stub_analyzer(_stub_generation(VALID_ANALYSIS_PAYLOAD))
+        analyzer.get_generation_backend_identity.return_value = (
+            "openai",
+            "glm-5.3-flash",
+        )
+        config = dataclasses.replace(
+            Config._load_from_env(),
+            cctv_news_reasoning_effort="low",
+        )
+
+        CctvNewsAnalyzer(analyzer=analyzer, config=config).analyze(
+            start_date=today, end_date=today, range_days=1
+        )
+
+        self.assertEqual(
+            analyzer.generate_text_with_metadata.call_args.kwargs["reasoning_effort"],
+            "low",
+        )
 
     def test_llm_not_configured_fails_loudly(self) -> None:
         from src.services.cctv_news_analyzer import (
@@ -971,9 +1002,36 @@ class CctvNewsApiTest(CctvNewsDatabaseTestCase):
         self.assertTrue(latest.json()["cached"])
 
     def test_analysis_without_data_returns_400(self) -> None:
-        response = self.client.post("/api/v1/cctv-news/analysis", json={"range_days": 7})
+        from src.services.cctv_news_service import CctvNewsService
+
+        with patch.object(CctvNewsService, "sync_range", return_value={}) as sync_range:
+            response = self.client.post("/api/v1/cctv-news/analysis", json={"range_days": 7})
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "validation_error")
+        sync_range.assert_called_once()
+
+    def test_single_day_analysis_uses_yesterday_and_auto_fetches_when_empty(self) -> None:
+        from src.services.cctv_news_service import CctvNewsService
+
+        today = date(2026, 8, 25)
+        yesterday = today - timedelta(days=1)
+
+        def auto_fetch(service, start_date, end_date, *, force=False):
+            self.assertEqual((start_date, end_date), (yesterday, yesterday))
+            self.assertTrue(force)
+            self._seed(yesterday, count=1)
+            return {"synced_days": 1}
+
+        with patch.object(CctvNewsService, "today", return_value=today), \
+                patch.object(CctvNewsService, "sync_range", autospec=True, side_effect=auto_fetch) as sync_range, \
+                _patch_analyzer(_stub_analyzer(_stub_generation(VALID_ANALYSIS_PAYLOAD))):
+            response = self.client.post("/api/v1/cctv-news/analysis", json={"range_days": 1})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["start_date"], "2026-08-24")
+        self.assertEqual(body["end_date"], "2026-08-24")
+        sync_range.assert_called_once()
 
     def test_analysis_without_llm_returns_503(self) -> None:
         today = date(2026, 8, 25)
@@ -1039,17 +1097,20 @@ class CctvNewsApiTest(CctvNewsDatabaseTestCase):
 
     def test_background_job_rejects_empty_window_upfront(self) -> None:
         from src.services.cctv_news_jobs import CctvNewsAnalysisJobManager
+        from src.services.cctv_news_service import CctvNewsService
 
         self.addCleanup(CctvNewsAnalysisJobManager.reset_instance)
         CctvNewsAnalysisJobManager.reset_instance()
 
-        response = self.client.post(
-            "/api/v1/cctv-news/analysis/jobs", json={"news_date": "2026-08-01"}
-        )
+        with patch.object(CctvNewsService, "sync_range", return_value={}) as sync_range:
+            response = self.client.post(
+                "/api/v1/cctv-news/analysis/jobs", json={"news_date": "2026-08-01"}
+            )
 
         # 没有素材属于确定性错误，当场 400，而不是让后台任务失败后用户才发现
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "validation_error")
+        sync_range.assert_called_once()
 
     def test_missing_job_returns_404(self) -> None:
         response = self.client.get("/api/v1/cctv-news/analysis/jobs/does-not-exist")

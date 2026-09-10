@@ -11,7 +11,7 @@ import re
 import socket
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
@@ -73,6 +73,16 @@ _NEWSNOW_DEFAULT_SOURCE_DEFS = [
         "source_id": "cls-hot",
         "market": "cn",
         "description": "NewsNow 财联社热门财经资讯，适合 A 股大盘和题材热点。",
+    },
+    {
+        # 电报比热门榜更适合做时间窗汇总：条目更多、带发布时间、有正文摘要。
+        # 保留上面的热门源而不是就地替换，是因为仓库没有"按名字更新已有源 url"的自愈逻辑，
+        # 就地改 source_id 对已经建过源的用户无效（他们会永远继续抓旧源）。
+        "template_id": "newsnow-cls-telegraph",
+        "name": "NewsNow 财联社电报",
+        "source_id": "cls-telegraph",
+        "market": "cn",
+        "description": "NewsNow 财联社电报，带发布时间的 A 股快讯流，适合盘前与周末消息面汇总。",
     },
     {
         "template_id": "newsnow-xueqiu-hotstock",
@@ -664,7 +674,9 @@ class IntelligenceService:
                 return None
             url_key = url
         else:
-            digest = hashlib.sha256(f"{source_name}|{title}|{published_at}".encode("utf-8")).hexdigest()[:24]
+            # 摘要里刻意不含 published_at：它的时间基准调整过一次，掺进 key 会让同一条
+            # 无链接条目在切换前后算出两个不同的 url_key，凭空多存一份。
+            digest = hashlib.sha256(f"{source_name}|{title}".encode("utf-8")).hexdigest()[:24]
             url_key = f"no-url:intel:{digest}"
         return FeedEntry(title or url_key, summary, url_key, source_name, published_at, {"source": source_name})
 
@@ -772,6 +784,13 @@ class IntelligenceService:
 
     @staticmethod
     def _parse_datetime(value: str) -> Optional[datetime]:
+        """解析上游发布时间，统一归一化成**本地 naive**。
+
+        必须与 ``fetched_at`` 同基：``IntelligenceItem`` 两个时间列都是无时区 DateTime，
+        ``storage.py`` 的默认值和 ``intelligence_repo`` 的全部 cutoff 都用本地
+        ``datetime.now()``。曾经这里归一化成 naive UTC，导致同表两套基准差 8 小时，
+        ``published_days=1`` 实际只覆盖约 16 小时。
+        """
         raw = (value or "").strip()
         if not raw:
             return None
@@ -783,7 +802,7 @@ class IntelligenceService:
             except ValueError:
                 return None
         if parsed.tzinfo is not None and parsed.utcoffset() is not None:
-            parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            parsed = parsed.astimezone().replace(tzinfo=None)
         return parsed
 
     @classmethod
@@ -793,7 +812,8 @@ class IntelligenceService:
             if timestamp > 10_000_000_000:
                 timestamp = timestamp / 1000
             try:
-                return datetime.fromtimestamp(timestamp, tz=timezone.utc).replace(tzinfo=None)
+                # 与 _parse_datetime 同一约定：epoch 是绝对时刻，落成本地 naive
+                return datetime.fromtimestamp(timestamp).replace(tzinfo=None)
             except (OSError, OverflowError, ValueError):
                 return None
         raw = str(value or "").strip()

@@ -78,6 +78,12 @@ from src.llm.provider_cache import (
     build_provider_cache_route_context,
     filter_prompt_cache_telemetry,
 )
+
+
+def _supports_reasoning_effort(model: str) -> bool:
+    """Return whether the configured model family accepts reasoning_effort."""
+    model_name = str(model or "").strip().lower().rsplit("/", 1)[-1]
+    return model_name.startswith(("glm-5", "deepseek-v4"))
 from src.llm.response_content import strip_leading_think_wrapper
 from src.storage import persist_llm_usage
 from src.data.stock_mapping import STOCK_NAME_MAP
@@ -3309,7 +3315,8 @@ class GeminiAnalyzer:
 
         Args:
             prompt: User prompt text.
-            generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
+            generation_config: Dict with optional keys: temperature, max_output_tokens,
+                max_tokens, reasoning_effort.
             response_validator: Optional callable that accepts the raw response text and raises
                 an exception if the response is unacceptable (e.g. not valid JSON).  When it
                 raises, the current model is treated as failed and the next fallback model is
@@ -3328,6 +3335,7 @@ class GeminiAnalyzer:
         )
         requested_temperature = generation_config.get('temperature', 0.7)
         requested_timeout = generation_config.get("timeout")
+        requested_reasoning_effort = generation_config.get("reasoning_effort")
 
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -3389,6 +3397,12 @@ class GeminiAnalyzer:
                     ],
                     "max_tokens": max_tokens,
                 }
+                if requested_reasoning_effort not in (None, "") and _supports_reasoning_effort(model):
+                    call_kwargs["reasoning_effort"] = requested_reasoning_effort
+                    # Qianfan exposes reasoning_effort on its OpenAI-compatible
+                    # endpoint; LiteLLM otherwise rejects this provider-specific
+                    # parameter before dispatching the request.
+                    call_kwargs["allowed_openai_params"] = ["reasoning_effort"]
                 if requested_timeout not in (None, ""):
                     call_kwargs["timeout"] = requested_timeout
                 if extra:
@@ -3571,6 +3585,8 @@ class GeminiAnalyzer:
         prompt: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        *,
+        reasoning_effort: Optional[str] = None,
     ) -> Optional[str]:
         """Public entry point for free-form text generation.
 
@@ -3589,7 +3605,11 @@ class GeminiAnalyzer:
         try:
             result = self._call_litellm(
                 prompt,
-                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                generation_config={
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
+                },
             )
             if isinstance(result, tuple):
                 text, model_used, usage = result
@@ -3616,12 +3636,18 @@ class GeminiAnalyzer:
         prompt: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        *,
+        reasoning_effort: Optional[str] = None,
     ) -> Optional[GenerationResult]:
         """Generate text and return the actual backend/model used for diagnostics."""
         try:
             result = self._call_litellm(
                 prompt,
-                generation_config={"max_tokens": max_tokens, "temperature": temperature},
+                generation_config={
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
+                },
                 return_generation_result=True,
             )
             if not isinstance(result, GenerationResult):
