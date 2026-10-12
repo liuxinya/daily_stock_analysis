@@ -58,7 +58,7 @@ class BriefSector(BaseModel):
 
 
 class BriefWatchItem(BaseModel):
-    """由板块方向推断出的关注标的（模型知识，非资讯原文）。"""
+    """由板块方向推断出的关注股票（模型知识，非资讯原文）。"""
 
     model_config = ConfigDict(extra="allow")
 

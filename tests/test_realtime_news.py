@@ -25,7 +25,11 @@ from src.services.realtime_news_service import (
     RealtimeNewsServiceError,
     RealtimeNewsUpstreamError,
     SHANGHAI_TZ,
+    TAG_DEPTH,
     normalize_akshare_records,
+    normalize_cls_payload,
+    normalize_cls_search,
+    normalize_em_search,
     normalize_newsnow_payload,
     normalize_xueqiu_payload,
     normalize_yicai_payload,
@@ -564,6 +568,162 @@ class YicaiRequestTest(unittest.TestCase):
                 realtime_news_service._fetch_yicai_page(nid="", page=1, page_size=50, timeout=5.0)
 
 
+class ClsNormalizeTest(unittest.TestCase):
+    """财联社电报：独立 title 字段，ctime 是 epoch 秒，level A/B 为站点标红的重要电报。"""
+
+    PLATFORM = PLATFORM_BY_KEY["cls"]
+
+    def test_titled_item_strips_bracket_prefix_and_builds_detail_url(self) -> None:
+        payload = {"data": {"roll_data": [{
+            "id": 2497850,
+            "title": "克普勒：9月末中东原油出口量超过伊朗战事前水平",
+            "content": "【克普勒：9月末中东原油出口量超过伊朗战事前水平】财联社10月5日电，数据显示出口回升。",
+            "brief": "【克普勒：9月末中东原油出口量超过伊朗战事前水平】财联社10月5日电，数据显示出口回升。",
+            "ctime": 1791180720,
+            "level": "C",
+        }]}}
+        entries = normalize_cls_payload(payload, self.PLATFORM, limit=10)
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry.title, "克普勒：9月末中东原油出口量超过伊朗战事前水平")
+        # 正文开头重复的「【标题】」被剥掉，只留正文做摘要
+        self.assertEqual(entry.summary, "财联社10月5日电，数据显示出口回升。")
+        self.assertEqual(entry.url, "https://www.cls.cn/detail/2497850")
+        # ctime 是 epoch 秒（UTC 基准），断言的是同一时刻并带 +08:00 偏移
+        self.assertEqual(entry.published_at, datetime.fromtimestamp(1791180720, tz=timezone.utc))
+        self.assertEqual(entry.published_at.utcoffset().total_seconds(), 8 * 3600)
+        self.assertEqual(entry.tag, "")
+
+    def test_untitled_item_falls_back_to_brief_prefix(self) -> None:
+        payload = {"data": {"roll_data": [{
+            "id": 1,
+            "title": "",
+            "brief": "财联社10月5日电，泰铢兑美元汇率下跌至33.74，创下自7月底以来的最低水平。",
+            "content": "财联社10月5日电，泰铢兑美元汇率下跌至33.74，创下自7月底以来的最低水平，交易清淡。",
+            "ctime": 1791180000,
+            "level": "C",
+        }]}}
+        entry = normalize_cls_payload(payload, self.PLATFORM, limit=10)[0]
+        self.assertTrue(entry.title.endswith("…"))
+        # content 比 brief 完整，摘要取 content
+        self.assertTrue(entry.summary.endswith("交易清淡。"))
+
+    def test_level_a_or_b_maps_to_important_tag(self) -> None:
+        payload = {"data": {"roll_data": [
+            {"id": 1, "title": "甲", "content": "正文", "ctime": 1791180000, "level": "A"},
+            {"id": 2, "title": "乙", "content": "正文", "ctime": 1791180000, "level": "b"},
+            {"id": 3, "title": "丙", "content": "正文", "ctime": 1791180000, "level": "C"},
+        ]}}
+        entries = normalize_cls_payload(payload, self.PLATFORM, limit=10)
+        self.assertEqual([e.tag for e in entries], ["重要", "重要", ""])
+
+    def test_ads_are_dropped(self) -> None:
+        payload = {"data": {"roll_data": [
+            {"id": 1, "title": "广告", "content": "推广", "ctime": 1791180000, "is_ad": 1},
+            {"id": 2, "title": "正常电报", "content": "正文", "ctime": 1791180000},
+        ]}}
+        entries = normalize_cls_payload(payload, self.PLATFORM, limit=10)
+        self.assertEqual([e.title for e in entries], ["正常电报"])
+
+    def test_limit_slices_raw_items(self) -> None:
+        payload = {"data": {"roll_data": [
+            {"id": index, "title": f"第{index}条", "content": "正文", "ctime": 1791180000}
+            for index in range(5)
+        ]}}
+        entries = normalize_cls_payload(payload, self.PLATFORM, limit=3)
+        self.assertEqual([e.title for e in entries], ["第0条", "第1条", "第2条"])
+        self.assertEqual(normalize_cls_payload(payload, self.PLATFORM, limit=0), [])
+
+    def test_malformed_payload_is_upstream_error(self) -> None:
+        for payload in ([], {"data": []}, {"data": {"roll_data": "x"}}, None):
+            with self.assertRaises(RealtimeNewsUpstreamError):
+                normalize_cls_payload(payload, self.PLATFORM, limit=10)
+
+
+class ClsRequestTest(unittest.TestCase):
+    """校验发出去的请求形状：固定 app/os/sv + name，sign 由参数算出。"""
+
+    PLATFORM = PLATFORM_BY_KEY["cls"]
+
+    def test_sign_matches_the_live_web_algorithm(self) -> None:
+        # 线上实测：telegraph 接口这组参数的 sign 固定为该值，守住签名算法不被改坏
+        params = {"app": "CailianpressWeb", "name": "telegraph", "os": "web", "sv": "8.7.9"}
+        self.assertEqual(
+            realtime_news_service._cls_sign(params), "6c73b056a64891cdc257dcf1914464ad"
+        )
+
+    def test_params_headers_and_sign(self) -> None:
+        captured: dict = {}
+
+        def _get(url, **kwargs):
+            captured.update({"url": url, **kwargs})
+            return _FakeResponse(200, {"data": {"roll_data": [
+                {"id": 1, "title": "电报", "content": "正文", "ctime": 1791180000}
+            ]}})
+
+        with patch.object(realtime_news_service.requests, "get", _get):
+            entries = realtime_news_service._fetch_cls(self.PLATFORM, limit=50, timeout=5.0)
+        self.assertEqual(captured["url"], "https://www.cls.cn/api/cache")
+        params = captured["params"]
+        self.assertEqual(params["app"], "CailianpressWeb")
+        self.assertEqual(params["os"], "web")
+        self.assertEqual(params["name"], "telegraph")
+        # sign 必须覆盖包含 name 在内的全部签名参数
+        signed = {k: v for k, v in params.items() if k != "sign"}
+        self.assertEqual(params["sign"], realtime_news_service._cls_sign(signed))
+        self.assertEqual(captured["headers"]["Referer"], "https://www.cls.cn/")
+        self.assertEqual([e.title for e in entries], ["电报"])
+
+    def test_transport_and_json_and_http_failures_are_upstream_errors(self) -> None:
+        def _raise(url, **kwargs):
+            raise requests.ConnectionError("boom")
+
+        with patch.object(realtime_news_service.requests, "get", _raise):
+            with self.assertRaises(RealtimeNewsUpstreamError):
+                realtime_news_service._fetch_cls(self.PLATFORM, limit=10, timeout=5.0)
+
+        with patch.object(realtime_news_service.requests, "get", lambda url, **kw: _FakeResponse(200, _NO_JSON)):
+            with self.assertRaises(RealtimeNewsUpstreamError):
+                realtime_news_service._fetch_cls(self.PLATFORM, limit=10, timeout=5.0)
+
+        with patch.object(realtime_news_service.requests, "get", lambda url, **kw: _FakeResponse(503)):
+            with self.assertRaises(RealtimeNewsUpstreamError):
+                realtime_news_service._fetch_cls(self.PLATFORM, limit=10, timeout=5.0)
+
+
+class UpstreamFailureReasonTest(unittest.TestCase):
+    """失败原因要能区分「上游挂了」和「本机代理把请求劫走了」。
+
+    这两类以前都只报一句 request failed，页面上看不出该查哪边。
+    """
+
+    def test_proxy_and_timeout_and_http_status_are_named(self) -> None:
+        reason = realtime_news_service._request_failure_reason
+        self.assertEqual(
+            reason(requests.exceptions.InvalidSchema("Missing dependencies for SOCKS support.")),
+            "SOCKS proxy configured but PySocks is not installed",
+        )
+        self.assertEqual(reason(requests.exceptions.ProxyError("boom")), "proxy error")
+        self.assertEqual(reason(requests.exceptions.ReadTimeout("slow")), "timeout")
+        self.assertEqual(reason(requests.ConnectionError("down")), "connection error")
+
+    def test_newsnow_error_carries_the_platform_and_the_reason(self) -> None:
+        def _raise(url, **kwargs):
+            raise requests.exceptions.ProxyError("tunnel refused")
+
+        with patch.object(realtime_news_service.requests, "get", _raise):
+            with self.assertRaises(RealtimeNewsUpstreamError) as ctx:
+                realtime_news_service._fetch_newsnow(
+                    PLATFORM_BY_KEY["jin10"], limit=10, timeout=5.0,
+                    base_url="https://newsnow.example.com",
+                )
+        message = str(ctx.exception)
+        self.assertIn("jin10", message)
+        self.assertIn("proxy error", message)
+        # 不回显上游异常原文：这条信息会经 API 到前端
+        self.assertNotIn("tunnel refused", message)
+
+
 class RealtimeNewsServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         RealtimeNewsService.reset_cache()
@@ -684,6 +844,302 @@ class RealtimeNewsAggregateTest(unittest.TestCase):
         with patch.object(RealtimeNewsService, "_fetch", self._fake_fetch(payloads)):
             result = self.service.list_latest(platform="hot", page_size=10)
         self.assertEqual(result["items"], [])
+
+
+def _yicai_dated_page(start_id: int, *, day: int, count: int = 50) -> list:
+    """同一页内日期一致的第一财经页，用来构造「翻过窗口起点」的场景。"""
+    return [{
+        "LiveID": start_id - index,
+        "LiveTitle": f"第{start_id - index}条",
+        "LiveContent": "正文",
+        "CreateDate": f"2026-10-{day:02d}T15:00:00",
+        "IsImportant": False,
+        "url": f"/brief/{start_id - index}.html",
+    } for index in range(count)]
+
+
+def _dated_entry(platform: str, title: str, hour: int, minute: int) -> RealtimeNewsEntry:
+    return RealtimeNewsEntry(
+        platform=platform,
+        platform_label=platform,
+        title=title,
+        summary="",
+        url=f"https://example.com/{title}",
+        published_at=datetime(2026, 9, 7, hour, minute, tzinfo=SHANGHAI_TZ),
+    )
+
+
+class WindowFetchTest(unittest.TestCase):
+    """消息面汇总的窗口回看取数：深翻到越过窗口起点即止，单平台失败不影响其余。"""
+
+    def _yicai_window_fetch(self, pages, *, stop_before):
+        calls: list = []
+
+        def _page(*, nid: str, page: int, page_size: int, timeout: float):
+            calls.append(nid)
+            return pages[len(calls) - 1]
+
+        with patch.object(realtime_news_service, "_fetch_yicai_page", _page):
+            entries = realtime_news_service._fetch_yicai(
+                PLATFORM_BY_KEY["yicai"], limit=600, timeout=30.0,
+                max_pages=12, stop_before=stop_before,
+            )
+        return entries, calls
+
+    def test_paging_stops_once_a_page_reaches_past_the_window_start(self) -> None:
+        """窗口起点之前的内容对汇总没用，翻到了就不该继续烧预算。"""
+        pages = [
+            _yicai_dated_page(300, day=11),  # 窗口内
+            _yicai_dated_page(250, day=10),  # 窗口内
+            _yicai_dated_page(200, day=8),   # 已越过起点：补完本页即停
+            _yicai_dated_page(150, day=7),   # 不该被请求
+        ]
+        entries, calls = self._yicai_window_fetch(
+            pages, stop_before=datetime(2026, 10, 9, 15, 0, tzinfo=SHANGHAI_TZ)
+        )
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(entries), 150)
+
+    def test_paging_without_stop_before_keeps_the_limit_semantics(self) -> None:
+        """默认 None 时不看时间，只按 limit / 页数上限 / 上游翻完停 —— 与页面取数一致。"""
+        pages = [_yicai_dated_page(300 - index * 50, day=8) for index in range(3)]
+        pages.append(_yicai_dated_page(150, day=7, count=20))  # 不足 page_size：上游翻完了
+        entries, calls = self._yicai_window_fetch(pages, stop_before=None)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(entries), 170)
+
+    def test_window_fetch_filters_to_the_window_and_is_fail_open(self) -> None:
+        since = datetime(2026, 9, 7, 19, 0, tzinfo=SHANGHAI_TZ)
+        until = datetime(2026, 9, 7, 19, 59, tzinfo=SHANGHAI_TZ)
+        payloads = {
+            "ths": [
+                _dated_entry("ths", "窗口内", 19, 30),
+                _dated_entry("ths", "窗口之前", 18, 30),
+            ],
+            "sina": RealtimeNewsUpstreamError("akshare fetch timeout"),
+        }
+        asked: list = []
+
+        def _window_entries_for(_self, platform, since_arg, budget):
+            asked.append(platform.key)
+            value = payloads.get(platform.key, [])
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        service = RealtimeNewsService(config=_config())
+        with patch.object(RealtimeNewsService, "_window_entries_for", _window_entries_for):
+            entries, failed = service.fetch_window_entries(since=since, until=until, budget_sec=5.0)
+
+        self.assertEqual([item.title for item in entries], ["窗口内"])
+        self.assertEqual(failed, ["sina"])
+        # 财新没有发布时间，无法按窗口过滤，不参与回看取数
+        self.assertNotIn("caixin", asked)
+        self.assertNotIn("hot", asked)
+
+
+# ---------------------------------------------------------------------------
+# 关键词全文搜索：各平台按任意关键词检索，复用市场级的归一化/缓存/聚合骨架。
+# ---------------------------------------------------------------------------
+
+
+def _sec(minute: int) -> int:
+    return int(datetime(2026, 9, 7, 19, minute, tzinfo=SHANGHAI_TZ).timestamp())
+
+
+class EastmoneySearchNormalizeTest(unittest.TestCase):
+    """东方财富关键词全文搜索：date=北京本地时间，tag=媒体名；JSONP 外壳剥离。"""
+
+    PLATFORM = PLATFORM_BY_KEY["eastmoney"]
+
+    def test_search_maps_fields_and_media_tag(self) -> None:
+        payload = {"result": {"cmsArticleWebOld": [
+            {"title": "贵州茅台三季报点评", "content": "净利润同比增长",
+             "mediaName": "证券时报", "url": "http://finance.eastmoney.com/a/1.html",
+             "date": "2026-09-07 19:13:00"},
+        ]}}
+        entry = normalize_em_search(payload, self.PLATFORM, limit=10)[0]
+        self.assertEqual(entry.title, "贵州茅台三季报点评")
+        self.assertEqual(entry.summary, "净利润同比增长")
+        self.assertEqual(entry.url, "https://finance.eastmoney.com/a/1.html")
+        self.assertEqual(entry.tag, "证券时报")
+        self.assertEqual(entry.published_at, datetime(2026, 9, 7, 19, 13, tzinfo=SHANGHAI_TZ))
+
+    def test_search_tag_blank_when_media_equals_platform_label(self) -> None:
+        payload = {"result": {"cmsArticleWebOld": [
+            {"title": "标题", "content": "正文", "mediaName": "东方财富", "date": "2026-09-07 19:13"},
+        ]}}
+        self.assertEqual(normalize_em_search(payload, self.PLATFORM, limit=10)[0].tag, "")
+
+    def test_search_missing_rows_returns_empty(self) -> None:
+        self.assertEqual(normalize_em_search({"result": {}}, self.PLATFORM, limit=10), [])
+
+    def test_search_malformed_payload_is_upstream_error(self) -> None:
+        with self.assertRaises(RealtimeNewsUpstreamError):
+            normalize_em_search([], self.PLATFORM, limit=10)
+
+    def test_strip_jsonp_unwraps_callback(self) -> None:
+        self.assertEqual(realtime_news_service._strip_jsonp('cb({"a": 1})'), {"a": 1})
+
+    def test_strip_jsonp_without_parens_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            realtime_news_service._strip_jsonp("not jsonp")
+
+
+class ClsSearchNormalizeTest(unittest.TestCase):
+    """财联社关键词全文搜索：time=epoch 秒，descr 含 <em> 高亮由清洗剥掉，深度文章 tag=深度。"""
+
+    PLATFORM = PLATFORM_BY_KEY["cls"]
+
+    def test_telegram_extracts_bracket_title_and_detail_url(self) -> None:
+        payload = {"data": {"telegram": {"data": [
+            {"descr": "【贵州茅台】公司拟<em>回购</em>股份", "id": 909, "time": _sec(13)},
+        ]}}}
+        entry = normalize_cls_search(payload, self.PLATFORM, limit=10, type_="telegram", tag="")[0]
+        self.assertEqual(entry.title, "贵州茅台")
+        self.assertEqual(entry.summary, "公司拟回购股份")
+        self.assertEqual(entry.url, "https://www.cls.cn/detail/909")
+        self.assertEqual(entry.tag, "")
+        self.assertEqual(entry.published_at, datetime(2026, 9, 7, 19, 13, tzinfo=SHANGHAI_TZ))
+
+    def test_explicit_title_strips_duplicated_prefix_in_body(self) -> None:
+        payload = {"data": {"telegram": {"data": [
+            {"title": "贵州茅台", "descr": "【贵州茅台】正文内容", "id": 1, "time": _sec(10)},
+        ]}}}
+        entry = normalize_cls_search(payload, self.PLATFORM, limit=10, type_="telegram", tag="")[0]
+        self.assertEqual(entry.title, "贵州茅台")
+        self.assertEqual(entry.summary, "正文内容")
+
+    def test_depth_articles_carry_depth_tag(self) -> None:
+        payload = {"data": {"depth": {"data": [
+            {"title": "深度解读茅台", "descr": "长文", "id": 2, "time": _sec(11)},
+        ]}}}
+        entry = normalize_cls_search(payload, self.PLATFORM, limit=10, type_="depth", tag=TAG_DEPTH)[0]
+        self.assertEqual(entry.tag, TAG_DEPTH)
+
+    def test_missing_section_returns_empty(self) -> None:
+        payload = {"data": {"telegram": {"data": []}}}
+        self.assertEqual(
+            normalize_cls_search(payload, self.PLATFORM, limit=10, type_="depth", tag=TAG_DEPTH), []
+        )
+
+    def test_malformed_payload_is_upstream_error(self) -> None:
+        with self.assertRaises(RealtimeNewsUpstreamError):
+            normalize_cls_search({"data": []}, self.PLATFORM, limit=10, type_="telegram", tag="")
+
+
+class CombineSearchSourcesTest(unittest.TestCase):
+    """单平台多来源（电报+深度）合并：按时间倒序去重，单源失败降级，全失败才判不可用。"""
+
+    def test_sources_are_merged_sorted_and_trimmed(self) -> None:
+        telegram = lambda: [_entry("cls", "旧闻", 10, url="a"), _entry("cls", "新闻", 50, url="b")]
+        depth = lambda: [_entry("cls", "深度", 30, url="c")]
+        combined = realtime_news_service._combine_search_sources([telegram, depth], limit=2)
+        self.assertEqual([e.title for e in combined], ["新闻", "深度"])
+
+    def test_same_title_across_sources_is_deduped(self) -> None:
+        a = lambda: [_entry("cls", "贵州茅台回购公告", 20, url="https://x/1")]
+        b = lambda: [_entry("cls", "贵州茅台回购公告！", 40)]
+        combined = realtime_news_service._combine_search_sources([a, b], limit=10)
+        self.assertEqual(len(combined), 1)
+
+    def test_one_failing_source_keeps_the_other(self) -> None:
+        ok = lambda: [_entry("cls", "新闻", 30, url="a")]
+
+        def boom():
+            raise RealtimeNewsUpstreamError("depth failed")
+
+        combined = realtime_news_service._combine_search_sources([boom, ok], limit=10)
+        self.assertEqual([e.title for e in combined], ["新闻"])
+
+    def test_all_sources_failing_raises_first_error(self) -> None:
+        def boom1():
+            raise RealtimeNewsUpstreamError("first")
+
+        def boom2():
+            raise RealtimeNewsUpstreamError("second")
+
+        with self.assertRaises(RealtimeNewsUpstreamError) as ctx:
+            realtime_news_service._combine_search_sources([boom1, boom2], limit=10)
+        self.assertIn("first", str(ctx.exception))
+
+    def test_entries_without_time_sort_last(self) -> None:
+        timed = _entry("cls", "有时间", 30, url="a")
+        undated = RealtimeNewsEntry("cls", "cls", "无时间", "", "b", None)
+        merged = realtime_news_service._merge_sort_dedupe([undated, timed])
+        self.assertEqual([e.title for e in merged], ["有时间", "无时间"])
+
+
+class RealtimeNewsSearchServiceTest(unittest.TestCase):
+    """list_search_news 调度：未知平台校验、空关键词校验、不支持平台空态、单平台拉取、聚合混排、缓存隔离。"""
+
+    def setUp(self) -> None:
+        RealtimeNewsService.reset_cache()
+        self.addCleanup(RealtimeNewsService.reset_cache)
+        self.service = RealtimeNewsService(config=_config())
+
+    @staticmethod
+    def _fake_fetch_search(payloads):
+        def _fetch_search(_self, platform, keyword):
+            value = payloads.get(platform.key, [])
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return _fetch_search
+
+    def test_unknown_platform_is_rejected(self) -> None:
+        with self.assertRaises(RealtimeNewsServiceError):
+            self.service.list_search_news(platform="not-a-platform", q="贵州茅台")
+
+    def test_empty_keyword_is_rejected(self) -> None:
+        with self.assertRaises(RealtimeNewsServiceError):
+            self.service.list_search_news(platform="hot", q="   ")
+
+    def test_unsupported_platform_returns_empty_but_echoes_query(self) -> None:
+        with patch.object(RealtimeNewsService, "_fetch_search", side_effect=AssertionError("不应拉搜索源")):
+            result = self.service.list_search_news(platform="ths", q="贵州茅台")
+        self.assertFalse(result["available"])
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["total"], 0)
+        self.assertEqual(result["query"], "贵州茅台")
+
+    def test_single_platform_dispatch_echoes_query_and_items(self) -> None:
+        entries = [_entry("cls", "茅台快讯", 30, url="a")]
+        with patch.object(RealtimeNewsService, "_fetch_search", return_value=entries):
+            result = self.service.list_search_news(platform="cls", q="贵州茅台")
+        self.assertTrue(result["available"])
+        self.assertTrue(result["has_published_at"])
+        self.assertEqual(result["query"], "贵州茅台")
+        self.assertEqual([item["title"] for item in result["items"]], ["茅台快讯"])
+
+    def test_aggregate_merges_supported_platforms_and_reports_failures(self) -> None:
+        payloads = {
+            "eastmoney": [_entry("eastmoney", "东财搜索", 50, url="b")],
+            "cls": RealtimeNewsUpstreamError("cls search timeout"),
+        }
+        with patch.object(RealtimeNewsService, "_fetch_search", self._fake_fetch_search(payloads)):
+            result = self.service.list_search_news(platform="hot", q="新能源", page_size=10)
+        self.assertEqual([item["title"] for item in result["items"]], ["东财搜索"])
+        self.assertEqual(result["failed_platforms"], ["cls"])
+        self.assertEqual(result["query"], "新能源")
+
+    def test_search_cache_is_isolated_from_market_level(self) -> None:
+        with patch.object(RealtimeNewsService, "_fetch_search",
+                          return_value=[_entry("cls", "搜索", 30, url="s")]) as fetch_search, \
+             patch.object(RealtimeNewsService, "_fetch",
+                          return_value=[_entry("cls", "市场", 30, url="m")]) as fetch:
+            self.service.list_search_news(platform="cls", q="贵州茅台")
+            self.service.list_search_news(platform="cls", q="贵州茅台")
+            self.service.list_latest(platform="cls")
+        self.assertEqual(fetch_search.call_count, 1)
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_different_keywords_do_not_share_cache(self) -> None:
+        with patch.object(RealtimeNewsService, "_fetch_search",
+                          return_value=[_entry("cls", "搜索", 30, url="s")]) as fetch_search:
+            self.service.list_search_news(platform="cls", q="贵州茅台")
+            self.service.list_search_news(platform="cls", q="比亚迪")
+        self.assertEqual(fetch_search.call_count, 2)
 
 
 if __name__ == "__main__":

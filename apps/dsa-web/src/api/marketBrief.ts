@@ -55,6 +55,17 @@ export type BriefTakeaway = {
   mentionedTerms: string[];
 };
 
+/** 事实层结论引用到的一条资讯原文（后端 payload 顶层 evidence 数组的元素）。 */
+export type BriefEvidence = {
+  id: number;
+  title: string;
+  summary: string;
+  source: string;
+  publishedAt: string | null;
+  /** 仅真实 http(s) 链接；无原文链接时为空串 */
+  url: string;
+};
+
 export type MarketBriefResult = {
   schemaVersion: string;
   mode: BriefMode;
@@ -90,6 +101,11 @@ export type MarketBriefPayload = {
     invalidEvidenceIds: number[];
   };
   coverage: { totalItems: number; citedItems: number };
+  /**
+   * 事实层各结论引用到的资讯条目原文。可选：旧版本生成的汇总（latest 读回、缓存命中）
+   * 不带该字段，组件侧一律以 `?? []` 兜底。
+   */
+  evidence?: BriefEvidence[];
   degraded: boolean;
   degradedReason: string;
   llmCalls: number;

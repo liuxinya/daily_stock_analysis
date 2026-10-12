@@ -32,10 +32,11 @@ _ALLOWED_MARKETS = {"cn", "hk", "us", "jp", "kr", "tw", "global"}
 _PRIVATE_HOSTNAMES = {"localhost", "localhost.localdomain"}
 _MAX_FEED_BYTES = 2 * 1024 * 1024
 _MAX_FEED_REDIRECTS = 5
-_UPSTREAM_FETCH_FAILURE_MESSAGE = "fetch failed: upstream request failed"
+_UPSTREAM_FETCH_FAILURE_REASON = "upstream request failed"
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
-_DISABLE_REQUEST_PROXIES = {"http": None, "https": None}
 _DNS_GUARD_LOCK = threading.Lock()
+_DIRECT_SESSION_LOCK = threading.Lock()
+_direct_session: Optional[requests.Session] = None
 _AUTO_FETCH_MIN_INTERVAL_SECONDS = 60 * 60
 _BUILTIN_SOURCE_TEMPLATES = [
     {
@@ -117,6 +118,66 @@ _NEWSNOW_DEFAULT_SOURCE_DEFS = [
 
 class IntelligenceServiceError(ValueError):
     """User-facing validation error for intelligence operations."""
+
+
+def _direct_session_get(url: str, **kwargs: Any) -> requests.Response:
+    """直连 GET：这条链路有意不走任何代理，由 ``trust_env=False`` 保证。
+
+    不能用 ``requests.get(..., proxies={"http": None, "https": None})`` 来表达
+    「禁用代理」：requests 会先把环境里的代理 ``setdefault`` 进来（包括 ``all_proxy``），
+    再把值为 ``None`` 的键整个删掉，于是 ``all`` 反而胜出。环境里只要有
+    ``ALL_PROXY=socks5h://...`` 而又没装 PySocks，全部资讯源就会瞬间失败在
+    ``InvalidSchema: Missing dependencies for SOCKS support``。``trust_env=False``
+    是文档化的开关，不依赖这种实现细节；``src/llm/hermes.py`` 的本地渠道同理。
+
+    session 进程内复用而不是每次新建并 ``with`` 关掉：调用方都是 ``stream=True``，
+    body 在本函数返回之后才读，提前关掉 session 会断流。
+    """
+    global _direct_session
+    with _DIRECT_SESSION_LOCK:
+        if _direct_session is None:
+            session = requests.Session()
+            session.trust_env = False
+            _direct_session = session
+        session = _direct_session
+    return session.get(url, **kwargs)
+
+
+def reset_direct_session() -> None:
+    """丢弃进程内缓存的直连 session。供测试隔离使用。"""
+    global _direct_session
+    with _DIRECT_SESSION_LOCK:
+        session, _direct_session = _direct_session, None
+    if session is not None:
+        session.close()
+
+
+def _upstream_failure_reason(exc: Exception) -> str:
+    """把抓取失败归成一个**固定词表**里的短语。
+
+    刻意不回显上游异常原文：source url 可能带 token/key，而这里的结果会写进
+    ``source.last_error`` 并经 API 出现在设置页。原文只落本地日志（见 ``fetch_source``）。
+    曾经这里一律返回同一句通用文案，代理、TLS、超时、403 全被抹平成一个样子，
+    排查只能靠猜。
+    """
+    if isinstance(exc, requests.exceptions.InvalidSchema) and "socks" in str(exc).lower():
+        return "SOCKS proxy configured but PySocks is not installed"
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return "proxy error"
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "TLS error"
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        return f"HTTP {status}" if status else _UPSTREAM_FETCH_FAILURE_REASON
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "connection error"
+    return _UPSTREAM_FETCH_FAILURE_REASON
+
+
+def _upstream_failure_message(exc: Exception) -> str:
+    return f"fetch failed: {_upstream_failure_reason(exc)}"
 
 
 @dataclass(frozen=True)
@@ -286,7 +347,12 @@ class IntelligenceService:
             error = self._sanitize_error(exc)
             if not dry_run:
                 self.repo.update_source_status(source.id, status="failed", error=error)
-            logger.warning("Intelligence source fetch failed id=%s name=%s: %s", source.id, source.name, error)
+            # exc_info：`error` 只是固定词表里的短语（不能回显可能带 token 的 url），
+            # 真正的异常链只在本地日志里留全量，排查代理/TLS/DNS 这类环境问题要靠它。
+            logger.warning(
+                "Intelligence source fetch failed id=%s name=%s: %s",
+                source.id, source.name, error, exc_info=True,
+            )
             raise
 
     def fetch_enabled_sources(self) -> Dict[str, Any]:
@@ -502,7 +568,7 @@ class IntelligenceService:
         except IntelligenceServiceError:
             raise
         except Exception as exc:
-            raise IntelligenceServiceError(_UPSTREAM_FETCH_FAILURE_MESSAGE) from exc
+            raise IntelligenceServiceError(_upstream_failure_message(exc)) from exc
         finally:
             if response is not None:
                 response.close()
@@ -541,7 +607,7 @@ class IntelligenceService:
         except IntelligenceServiceError:
             raise
         except Exception as exc:
-            raise IntelligenceServiceError(_UPSTREAM_FETCH_FAILURE_MESSAGE) from exc
+            raise IntelligenceServiceError(_upstream_failure_message(exc)) from exc
         finally:
             if response is not None:
                 response.close()
@@ -577,9 +643,7 @@ class IntelligenceService:
         with _DNS_GUARD_LOCK:
             socket.getaddrinfo = guarded_getaddrinfo
             try:
-                request_kwargs = dict(kwargs)
-                request_kwargs.setdefault("proxies", _DISABLE_REQUEST_PROXIES)
-                return requests.get(raw_url, **request_kwargs)
+                return _direct_session_get(raw_url, **kwargs)
             finally:
                 socket.getaddrinfo = original_getaddrinfo
 

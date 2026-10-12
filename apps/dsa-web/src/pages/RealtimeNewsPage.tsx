@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, Sparkles } from 'lucide-react';
+import { RefreshCw, Search, Sparkles, X } from 'lucide-react';
 
 import {
   ApiErrorAlert,
@@ -9,6 +9,7 @@ import {
   Card,
   EmptyState,
   InlineAlert,
+  Input,
   Loading,
   PageHeader,
   Pagination,
@@ -47,6 +48,10 @@ const RealtimeNewsPage: React.FC = () => {
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState<ParsedApiError | null>(null);
 
+  // 关键词搜索：输入关键词后各平台 tab 改按关键词全文检索；清空回到市场级 feed。
+  const [searchInput, setSearchInput] = useState('');
+  const [keyword, setKeyword] = useState('');
+
   const [briefWindow, setBriefWindow] = useState<MarketBriefWindow | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefLoadError, setBriefLoadError] = useState<ParsedApiError | null>(null);
@@ -81,23 +86,34 @@ const RealtimeNewsPage: React.FC = () => {
     }
   }, []);
 
-  const loadItems = useCallback(async (platform: string, targetPage: number) => {
-    const requestId = itemsRequestIdRef.current + 1;
-    itemsRequestIdRef.current = requestId;
-    setItemsLoading(true);
-    setItemsError(null);
-    try {
-      const response = await realtimeNewsApi.listItems({ platform, page: targetPage, pageSize: PAGE_SIZE });
-      if (itemsRequestIdRef.current !== requestId) return;
-      setData(response);
-    } catch (error) {
-      if (itemsRequestIdRef.current !== requestId) return;
-      setData(null);
-      setItemsError(getParsedApiError(error));
-    } finally {
-      if (itemsRequestIdRef.current === requestId) setItemsLoading(false);
-    }
-  }, []);
+  const loadItems = useCallback(
+    async (platform: string, targetPage: number, query: string) => {
+      const requestId = itemsRequestIdRef.current + 1;
+      itemsRequestIdRef.current = requestId;
+      setItemsLoading(true);
+      setItemsError(null);
+      try {
+        // 有关键词走 /search（按关键词全文检索），否则走 /items（市场级 feed）。
+        const response = query
+          ? await realtimeNewsApi.searchItems({
+              platform,
+              q: query,
+              page: targetPage,
+              pageSize: PAGE_SIZE,
+            })
+          : await realtimeNewsApi.listItems({ platform, page: targetPage, pageSize: PAGE_SIZE });
+        if (itemsRequestIdRef.current !== requestId) return;
+        setData(response);
+      } catch (error) {
+        if (itemsRequestIdRef.current !== requestId) return;
+        setData(null);
+        setItemsError(getParsedApiError(error));
+      } finally {
+        if (itemsRequestIdRef.current === requestId) setItemsLoading(false);
+      }
+    },
+    [],
+  );
 
   /** 进汇总 tab 时先拉当前窗口与最新一份结果，让用户不必先点按钮才有内容看。 */
   const loadBrief = useCallback(async () => {
@@ -132,14 +148,34 @@ const RealtimeNewsPage: React.FC = () => {
       void loadBrief();
       return;
     }
-    void loadItems(activeTab, page);
-  }, [loadItems, loadBrief, activeTab, page]);
+    void loadItems(activeTab, page, keyword);
+  }, [loadItems, loadBrief, activeTab, page, keyword]);
 
   const handleSelectTab = (key: string) => {
     if (key === activeTab) return;
     setActiveTab(key);
     setPage(1);
   };
+
+  /** 提交关键词：各平台 tab 改按该关键词检索；从汇总 tab 搜索时顺带切到聚合，直接看结果。 */
+  const handleSearchSubmit = useCallback(
+    (event?: React.FormEvent) => {
+      event?.preventDefault();
+      const next = searchInput.trim();
+      if (!next) return;
+      setKeyword(next);
+      setPage(1);
+      setActiveTab((current) => (current === BRIEF_TAB ? AGGREGATE_PLATFORM : current));
+    },
+    [searchInput],
+  );
+
+  /** 清除关键词，回到市场级 feed。 */
+  const clearSearch = useCallback(() => {
+    setKeyword('');
+    setSearchInput('');
+    setPage(1);
+  }, []);
 
   const activeMeta = platforms.find((item) => item.key === activeTab);
   const platformLabel = data?.platformLabel || activeMeta?.label || '实时';
@@ -170,7 +206,7 @@ const RealtimeNewsPage: React.FC = () => {
           <Button
             variant="secondary"
             size="md"
-            onClick={() => void loadItems(activeTab, page)}
+            onClick={() => void loadItems(activeTab, page, keyword)}
             isLoading={itemsLoading}
             loadingText="刷新中"
           >
@@ -226,6 +262,45 @@ const RealtimeNewsPage: React.FC = () => {
           </div>
         )}
       </Card>
+
+      {/* 关键词搜索：输入后各平台按该关键词全文检索；清空回到市场级 feed。 */}
+      <div className="space-y-2">
+        <form className="flex flex-wrap items-center gap-2" onSubmit={handleSearchSubmit}>
+          <div className="min-w-[240px] flex-1 sm:max-w-sm">
+            <Input
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="搜索关键词看相关新闻（如 比亚迪 / 新能源 / 美联储降息）"
+              aria-label="按关键词搜索新闻"
+              trailingAction={
+                <button
+                  type="submit"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border/40 bg-muted/20 text-muted-text transition-colors hover:border-[hsl(var(--primary))]/40 hover:text-[hsl(var(--primary))]"
+                  aria-label="搜索"
+                >
+                  <Search className="h-4 w-4" aria-hidden="true" />
+                </button>
+              }
+            />
+          </div>
+          {keyword ? (
+            <button
+              type="button"
+              onClick={clearSearch}
+              className="inline-flex items-center gap-1.5 rounded-full border border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 px-3 py-1.5 text-sm font-medium text-[hsl(var(--primary))] transition-colors hover:bg-[hsl(var(--primary))]/20"
+              aria-label={`清除搜索：${keyword}`}
+            >
+              {keyword}
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          ) : null}
+        </form>
+        {keyword ? (
+          <p className="text-xxs text-muted-text">
+            正在搜索「{keyword}」的相关新闻；清除后回到市场级快讯。
+          </p>
+        ) : null}
+      </div>
 
       {showingBrief ? (
         <div role="tabpanel" className="space-y-4">
@@ -287,7 +362,7 @@ const RealtimeNewsPage: React.FC = () => {
           {itemsError ? (
             <ApiErrorAlert
               error={itemsError}
-              onAction={() => void loadItems(activeTab, page)}
+              onAction={() => void loadItems(activeTab, page, keyword)}
               actionLabel="重试"
             />
           ) : null}
@@ -308,6 +383,18 @@ const RealtimeNewsPage: React.FC = () => {
               unavailable={data ? !data.available : false}
               platformLabel={platformLabel}
               showPlatformBadge={activeTab === AGGREGATE_PLATFORM}
+              unavailableTitle={keyword ? `${platformLabel}不支持关键词搜索` : undefined}
+              unavailableDescription={
+                keyword
+                  ? '该平台只提供市场级快讯，没有全文搜索接口；换到财经热榜 / 财联社 / 东方财富，或清除关键词再看。'
+                  : undefined
+              }
+              emptyTitle={keyword ? `没搜到「${keyword}」的相关新闻` : undefined}
+              emptyDescription={
+                keyword
+                  ? '换个关键词，或到「财经热榜」聚合搜索，也可以稍后再刷新。'
+                  : undefined
+              }
             />
           )}
 

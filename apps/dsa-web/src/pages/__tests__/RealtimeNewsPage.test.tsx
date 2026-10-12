@@ -5,9 +5,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RealtimeNewsPage from '../RealtimeNewsPage';
 import { useMarketBriefStore } from '../../stores/marketBriefStore';
 
-const { listPlatforms, listItems, getWindow, latest, submitJob, getJob } = vi.hoisted(() => ({
+const { listPlatforms, listItems, searchItems, getWindow, latest, submitJob, getJob } = vi.hoisted(() => ({
   listPlatforms: vi.fn(),
   listItems: vi.fn(),
+  searchItems: vi.fn(),
   getWindow: vi.fn(),
   latest: vi.fn(),
   submitJob: vi.fn(),
@@ -15,7 +16,7 @@ const { listPlatforms, listItems, getWindow, latest, submitJob, getJob } = vi.ho
 }));
 
 vi.mock('../../api/realtimeNews', () => ({
-  realtimeNewsApi: { listPlatforms, listItems },
+  realtimeNewsApi: { listPlatforms, listItems, searchItems },
 }));
 
 vi.mock('../../api/marketBrief', () => ({
@@ -24,12 +25,12 @@ vi.mock('../../api/marketBrief', () => ({
 
 const platformList = {
   items: [
-    { key: 'hot', label: '财经热榜', provider: 'aggregate', available: true, hasPublishedAt: true },
-    { key: 'ths', label: '同花顺', provider: 'akshare', available: true, hasPublishedAt: true },
-    { key: 'yicai', label: '第一财经', provider: 'yicai', available: true, hasPublishedAt: true },
+    { key: 'hot', label: '财经热榜', provider: 'aggregate', available: true, hasPublishedAt: true, supportsSearch: true },
+    { key: 'ths', label: '同花顺', provider: 'akshare', available: true, hasPublishedAt: true, supportsSearch: false },
+    { key: 'yicai', label: '第一财经', provider: 'yicai', available: true, hasPublishedAt: true, supportsSearch: false },
     // 后端注册表当前每个平台都有源，但 available: false 仍是接口契约的一部分，
     // 前端要对占位平台展示空态而不是报错，所以这里保留一个合成的占位项
-    { key: 'placeholder', label: '占位平台', provider: '', available: false, hasPublishedAt: true },
+    { key: 'placeholder', label: '占位平台', provider: '', available: false, hasPublishedAt: true, supportsSearch: false },
   ],
   total: 4,
   defaultPlatform: 'hot',
@@ -110,6 +111,7 @@ const itemsResponse = (overrides: Record<string, unknown> = {}) => ({
   pageSize: 20,
   failedPlatforms: [],
   fetchedAt: '2026-09-07T20:00:00+08:00',
+  query: null,
   ...overrides,
 });
 
@@ -124,6 +126,13 @@ describe('RealtimeNewsPage', () => {
     vi.clearAllMocks();
     listPlatforms.mockResolvedValue(platformList);
     listItems.mockResolvedValue(itemsResponse());
+    searchItems.mockResolvedValue(
+      itemsResponse({ platform: 'hot', platformLabel: '财经热榜', query: '新能源', items: [{
+        platform: 'cls', platformLabel: '财联社', title: '新能源补贴新政快讯',
+        summary: '搜索摘要', url: 'https://example.com/search',
+        publishedAt: new Date(Date.now() - 3600 * 1000).toISOString(), tag: '',
+      }] }),
+    );
     getWindow.mockResolvedValue(briefWindow);
     latest.mockRejectedValue({ parsedError: { title: '未找到', message: '没有汇总', rawMessage: '', category: 'http_error' as const, status: 404 } });
     useMarketBriefStore.setState({ job: null, result: null, submitError: null, notice: null });
@@ -150,7 +159,7 @@ describe('RealtimeNewsPage', () => {
     expect(await screen.findByText('关键消息')).toBeInTheDocument();
     expect(await screen.findByText('工信部发文')).toBeInTheDocument();
     expect(await screen.findByText('板块方向')).toBeInTheDocument();
-    expect(await screen.findByText('关注标的')).toBeInTheDocument();
+    expect(await screen.findByText('关注股票')).toBeInTheDocument();
     expect(await screen.findByText(/由已确认的板块方向推断/)).toBeInTheDocument();
     // grounding 丢弃要如实说明
     expect(await screen.findByText('已过滤无原文依据的结论')).toBeInTheDocument();
@@ -227,5 +236,78 @@ describe('RealtimeNewsPage', () => {
 
     expect(await screen.findByText('加载失败')).toBeInTheDocument();
     expect(await screen.findByText('实时新闻接口不可用')).toBeInTheDocument();
+  });
+
+  it('searching a keyword looks it up on the active platform and jumps from the brief tab to the aggregate', async () => {
+    renderPage();
+    // 落地在汇总 tab，输入关键词提交后应切到聚合（hot）并按关键词全文检索
+    const input = await screen.findByLabelText('按关键词搜索新闻');
+    fireEvent.change(input, { target: { value: '新能源' } });
+    fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+
+    await waitFor(() => {
+      expect(searchItems).toHaveBeenLastCalledWith({ platform: 'hot', q: '新能源', page: 1, pageSize: 20 });
+    });
+    expect(await screen.findByRole('tab', { name: '财经热榜' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByText('新能源补贴新政快讯')).toBeInTheDocument();
+    // 有关键词时不该再走市场级 feed
+    expect(listItems).not.toHaveBeenCalled();
+  });
+
+  it('keeps the keyword when switching platform tabs and re-searches per platform', async () => {
+    renderPage();
+    const input = await screen.findByLabelText('按关键词搜索新闻');
+    fireEvent.change(input, { target: { value: '新能源' } });
+    fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+    await waitFor(() => expect(searchItems).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByRole('tab', { name: '同花顺' }));
+
+    await waitFor(() => {
+      expect(searchItems).toHaveBeenLastCalledWith({ platform: 'ths', q: '新能源', page: 1, pageSize: 20 });
+    });
+    expect(listItems).not.toHaveBeenCalled();
+  });
+
+  it('clearing the keyword returns to the market-level feed', async () => {
+    renderPage();
+    const input = await screen.findByLabelText('按关键词搜索新闻');
+    fireEvent.change(input, { target: { value: '新能源' } });
+    fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+    await waitFor(() => expect(searchItems).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByRole('button', { name: /清除搜索/ }));
+
+    await waitFor(() => {
+      expect(listItems).toHaveBeenLastCalledWith({ platform: 'hot', page: 1, pageSize: 20 });
+    });
+  });
+
+  it('shows a keyword-specific empty state when nothing matches', async () => {
+    renderPage();
+    searchItems.mockResolvedValue(
+      itemsResponse({ platform: 'hot', platformLabel: '财经热榜', items: [], total: 0, query: '不存在的词' }),
+    );
+    const input = await screen.findByLabelText('按关键词搜索新闻');
+    fireEvent.change(input, { target: { value: '不存在的词' } });
+    fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+
+    expect(await screen.findByText(/没搜到「不存在的词」的相关新闻/)).toBeInTheDocument();
+  });
+
+  it('shows an unsupported-search state for a platform that cannot do full-text search', async () => {
+    renderPage();
+    // 先在聚合里搜出关键词，再切到不支持搜索的同花顺：后端回 available=false
+    const input = await screen.findByLabelText('按关键词搜索新闻');
+    fireEvent.change(input, { target: { value: '新能源' } });
+    fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+    await waitFor(() => expect(searchItems).toHaveBeenCalled());
+
+    searchItems.mockResolvedValue(
+      itemsResponse({ platform: 'ths', platformLabel: '同花顺', available: false, items: [], total: 0, query: '新能源' }),
+    );
+    fireEvent.click(await screen.findByRole('tab', { name: '同花顺' }));
+
+    expect(await screen.findByText('同花顺不支持关键词搜索')).toBeInTheDocument();
   });
 });

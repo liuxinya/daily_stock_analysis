@@ -44,6 +44,9 @@ class MarketBriefResponse(BaseModel):
     result: Dict[str, Any] = Field(default_factory=dict)
     grounding: Dict[str, Any] = Field(default_factory=dict)
     coverage: Dict[str, Any] = Field(default_factory=dict)
+    # 事实层各结论引用到的资讯条目原文（供前端「信源 N」展开）。顶层数组，只含被引用到的
+    # 条目；旧版本生成的汇总没有该字段，故给默认空数组。
+    evidence: List[Dict[str, Any]] = Field(default_factory=list)
     degraded: bool = False
     degraded_reason: str = ""
     llm_calls: int = 0

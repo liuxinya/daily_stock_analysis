@@ -1014,5 +1014,60 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(emails, ["user@example.com"])
 
 
+class ProxyNoProxyTestCase(unittest.TestCase):
+    """配了代理时，数据源与资讯源域名必须进 NO_PROXY，否则请求会被代理劫走。"""
+
+    def tearDown(self):
+        Config.reset_instance()
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_news_source_hosts_are_excluded_from_the_proxy(self, *_mocks):
+        with patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:7890"}, clear=True):
+            Config._load_from_env()
+            no_proxy = os.environ["NO_PROXY"]
+
+        for host in ("busiyi.world", "cls.cn", "xueqiu.com", "yicai.com", "10jqka.com.cn"):
+            self.assertIn(host, no_proxy)
+        # 原有的国内行情源不能丢
+        self.assertIn("eastmoney.com", no_proxy)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_all_proxy_alone_still_triggers_the_exclusion(self, *_mocks):
+        """只设置 ALL_PROXY 时 requests 同样会代理全部请求，这块逻辑不能被跳过。"""
+        with patch.dict(os.environ, {"ALL_PROXY": "socks5h://127.0.0.1:1080"}, clear=True):
+            Config._load_from_env()
+            no_proxy = os.environ["NO_PROXY"]
+            # 没有 HTTP_PROXY 时不要凭空造一个出来
+            self.assertNotIn("HTTP_PROXY", os.environ)
+
+        self.assertIn("busiyi.world", no_proxy)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_user_supplied_no_proxy_entries_are_kept(self, *_mocks):
+        with patch.dict(os.environ, {
+            "HTTP_PROXY": "http://127.0.0.1:7890",
+            "NO_PROXY": "internal.example.com",
+        }, clear=True):
+            Config._load_from_env()
+            no_proxy = os.environ["NO_PROXY"]
+
+        self.assertIn("internal.example.com", no_proxy)
+        self.assertIn("busiyi.world", no_proxy)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    @patch.object(Config, "_parse_stock_email_groups", return_value=[])
+    def test_no_proxy_is_untouched_without_any_proxy_env(self, *_mocks):
+        with patch.dict(os.environ, {}, clear=True):
+            Config._load_from_env()
+            self.assertNotIn("NO_PROXY", os.environ)
+
+
 if __name__ == "__main__":
     unittest.main()

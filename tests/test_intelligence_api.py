@@ -64,7 +64,7 @@ class IntelligenceApiTestCase(unittest.TestCase):
         create_resp = self.client.post("/api/v1/intelligence/sources", json={"name": "api-feed", "url": "https://feeds.example.com/rss.xml", "source_type": "rss", "scope_type": "market", "market": "cn"})
         self.assertEqual(create_resp.status_code, 200)
         source_id = create_resp.json()["id"]
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_response()):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=self._mock_response()):
             fetch_resp = self.client.post(f"/api/v1/intelligence/sources/{source_id}/fetch")
         self.assertEqual(fetch_resp.status_code, 200)
         self.assertEqual(fetch_resp.json()["saved_count"], 1)
@@ -171,7 +171,7 @@ class IntelligenceApiTestCase(unittest.TestCase):
             ("fetch", lambda: self.client.post(f"/api/v1/intelligence/sources/{source_id}/fetch")),
         ]
         with patch(
-            "src.services.intelligence_service.requests.get",
+            "src.services.intelligence_service._direct_session_get",
             side_effect=lambda url, **_kwargs: self._mock_http_error_response(url),
         ):
             for endpoint, send_request in requests_to_check:
@@ -204,7 +204,7 @@ class IntelligenceApiTestCase(unittest.TestCase):
             ("fetch", lambda: self.client.post(f"/api/v1/intelligence/sources/{source_id}/fetch")),
         ]
         with patch(
-            "src.services.intelligence_service.requests.get",
+            "src.services.intelligence_service._direct_session_get",
             side_effect=lambda url, **_kwargs: self._mock_http_error_response(url),
         ):
             for endpoint, send_request in requests_to_check:

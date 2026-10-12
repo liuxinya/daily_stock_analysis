@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
 import time
 import threading
 from collections.abc import Awaitable, Callable
@@ -16,6 +17,7 @@ from warnings import warn
 import anyio.to_thread
 import fastapi.testclient
 import httpx
+import pytest
 import starlette.testclient
 from anyio._backends import _asyncio
 
@@ -249,3 +251,32 @@ class _ThreadlessTestClient:
 
 fastapi.testclient.TestClient = _ThreadlessTestClient
 starlette.testclient.TestClient = _ThreadlessTestClient
+
+
+@pytest.fixture(autouse=True)
+def _restore_os_environ():
+    """Restore ``os.environ`` after every test.
+
+    多个测试会在运行时构造 ``Config`` / 调用 ``setup_env()``，而后者通过
+    ``load_dotenv`` 把仓库根目录真实 ``.env`` 的键写进 ``os.environ`` 并长期驻留。
+    开发机上这份 ``.env`` 往往带着 ``LLM_CHANNELS`` / ``LLM_QIANFAN_*`` 等渠道配置，
+    一旦泄漏到进程环境，后续把 ``os.environ`` 当作「运行时配置」读取的用例
+    （如 ``test_system_config_service`` / ``test_system_config_api``）就会读到这些
+    杂散键，整轮跑 ``ci_gate`` 时随机报 ``ConfigValidationError``；而 CI 环境没有
+    这份 ``.env``，所以单独跑或在 CI 上都是绿的。
+
+    这里按「每个用例结束后把环境还原到用例开始前的快照」来兜底：用例运行期间对
+    ``os.environ`` 的改动一律保留（不影响任何用例自身，包括故意加载仓库 ``.env``
+    的 ``test_tushare_fetcher_get_stock_list``），只在用例结束后清掉本次新增的键、
+    还原被改动或删除的键，从根上阻断跨用例的环境泄漏。
+    """
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        for key in list(os.environ.keys()):
+            if key not in snapshot:
+                del os.environ[key]
+        for key, value in snapshot.items():
+            if os.environ.get(key) != value:
+                os.environ[key] = value

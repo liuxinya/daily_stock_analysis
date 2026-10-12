@@ -53,7 +53,14 @@ MAX_RISKS = 6
 MAX_KEYWORDS = 20
 
 DEFAULT_MAX_LLM_CALLS = 12
-CHUNK_MAX_CHARS = 4000
+# 单段字数预算。素材上限提到 300 条后，4000 字一段会切出十几段、直接撞上调用次数
+# 上限变成 budget_exhausted 降级，所以这里同步放宽，让常见规模落在 6 段左右。
+CHUNK_MAX_CHARS = 8000
+# 放宽单段字数的上界：超过这个值就不再翻倍，交给 budget_exhausted 如实降级
+_CHUNK_MAX_CHARS_CEILING = 256_000
+# 进 prompt 的单条摘要上限。资讯池里单条 summary 可达 2000 字符（RSS 全文摘要），
+# 不截断的话段数完全由少数长条目决定；快讯本身一两百字就说完了。
+ITEM_SUMMARY_PROMPT_MAX_CHARS = 300
 
 BEGIN_ITEMS = "===== BEGIN_UNTRUSTED_NEWS_ITEMS ====="
 END_ITEMS = "===== END_UNTRUSTED_NEWS_ITEMS ====="
@@ -106,10 +113,25 @@ class BriefItem:
     summary: str
     source: str
     published_at: Optional[str]
+    # 仅保留真正的 http(s) 链接：无链接条目入库时 url 是伪链接 no-url:intel:<hash>，
+    # 带到前端会变成死链，所以在 prepare_items 里过滤成空串。
+    url: str = ""
+
+    @property
+    def prompt_summary(self) -> str:
+        """送进 prompt 的摘要（截断版）。
+
+        ``summary`` 本身保持原文不动：信源抽屉（``collect_evidence``）展示的是它，
+        ``evidence_signature`` 也按它计算，所以截断只影响模型看到的那一份。
+        """
+        text = self.summary or ""
+        if len(text) <= ITEM_SUMMARY_PROMPT_MAX_CHARS:
+            return text
+        return text[:ITEM_SUMMARY_PROMPT_MAX_CHARS].rstrip() + "…"
 
     @property
     def char_count(self) -> int:
-        return len(self.title or "") + len(self.summary or "")
+        return len(self.title or "") + len(self.prompt_summary)
 
 
 def _normalize_for_match(text: str) -> str:
@@ -131,14 +153,52 @@ def prepare_items(rows: Sequence[Dict[str, Any]], *, max_items: int) -> List[Bri
         title = str(row.get("title") or "").strip()
         if not title:
             continue
+        # 无链接条目入库时 url 会被写成伪链接 no-url:intel:<hash>，过滤成空串避免前端死链
+        url = str(row.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            url = ""
         prepared.append(BriefItem(
             id=len(prepared) + 1,
             title=title,
             summary=str(row.get("summary") or "").strip(),
             source=str(row.get("source_name") or row.get("source") or "").strip(),
             published_at=row.get("published_at") or row.get("fetched_at"),
+            url=url,
         ))
     return prepared
+
+
+def collect_evidence(
+    prepared: Sequence[BriefItem], result: MarketBriefResult
+) -> List[Dict[str, Any]]:
+    """回捞结果里被引用到的条目原文，供前端「信源 N」展开查看。
+
+    引用集合取事实层（events/sectors/takeaways）与推断层（watch_list）四者
+    ``evidence_ids`` 的并集：watch_list 的证据常来自其父板块，必须一并纳入，
+    否则点开某个标的的信源会落空。只带被引用到的条目、不带全部素材，是为了
+    控制 payload 体积（单条 summary 上限 2000 字，带全部 120 条会明显变大）。
+
+    与 ``coverage.cited_items`` 刻意分开：后者只统计 events+sectors，是页头
+    「X/Y 条被引用」这个既有用户可见指标的口径，不能被这里的并集改掉。
+    """
+    referenced: set = set()
+    for entry in (*result.events, *result.sectors, *result.takeaways, *result.watch_list):
+        referenced.update(getattr(entry, "evidence_ids", None) or [])
+    by_id = {item.id: item for item in prepared}
+    evidence: List[Dict[str, Any]] = []
+    for eid in sorted(referenced):
+        item = by_id.get(eid)
+        if item is None:
+            continue
+        evidence.append({
+            "id": item.id,
+            "title": item.title,
+            "summary": item.summary,
+            "source": item.source,
+            "published_at": item.published_at,
+            "url": item.url,
+        })
+    return evidence
 
 
 def split_into_chunks(prepared: Sequence[BriefItem], *, max_chars: int) -> List[List[BriefItem]]:
@@ -161,11 +221,33 @@ def split_into_chunks(prepared: Sequence[BriefItem], *, max_chars: int) -> List[
     return chunks
 
 
+def split_within_call_budget(prepared: Sequence[BriefItem], *, max_calls: int) -> List[List[BriefItem]]:
+    """按字数切段，但保证段数不超过模型调用预算。
+
+    ``analyze`` 对超出预算的段是**整段跳过**的，而段是按时间顺序排的，所以超预算
+    丢掉的正好是窗口里最早那批素材 —— 等于把分层抽样辛苦铺开的时间覆盖又砍回最近
+    几小时。宁可让单段长一点（翻倍放宽直到段数够用），也不要静默丢素材。
+    """
+    budget = max(1, int(max_calls))
+    max_chars = CHUNK_MAX_CHARS
+    chunks = split_into_chunks(prepared, max_chars=max_chars)
+    # 上界兜底：单段装得下全部素材时必然只有一段，循环一定会终止
+    while len(chunks) > budget and max_chars < _CHUNK_MAX_CHARS_CEILING:
+        max_chars *= 2
+        chunks = split_into_chunks(prepared, max_chars=max_chars)
+    if max_chars != CHUNK_MAX_CHARS:
+        logger.info(
+            "[MarketBrief] 段数超出调用预算，单段字数放宽到 %d（%d 条 → %d 段，预算 %d）",
+            max_chars, len(prepared), len(chunks), budget,
+        )
+    return chunks
+
+
 def build_chunk_prompt(chunk: Sequence[BriefItem], *, window: BriefWindow, phase_section: str = "") -> str:
     """组装一段的 prompt。条目编号用全局 id。"""
     listed = "\n\n".join(
         f"[{item.id}] {item.published_at or '时间未知'} | {_escape_sentinels(item.source)} | "
-        f"{_escape_sentinels(item.title)}\n{_escape_sentinels(item.summary)}"
+        f"{_escape_sentinels(item.title)}\n{_escape_sentinels(item.prompt_summary)}"
         for item in chunk
     )
     instruction = _render_instruction(window)
@@ -592,7 +674,8 @@ class MarketBriefAnalyzer:
         prepared = prepare_items(items, max_items=max_items)
         if not prepared:
             raise MarketBriefAnalyzerError(
-                "窗口内没有可用的资讯条目；请先开启 NEWS_INTEL_COLLECT_ENABLED 采集，或放宽时间窗。"
+                "窗口内没有可用的资讯条目；请检查网络与代理（汇总时会直拉各快讯接口），"
+                "或开启 NEWS_INTEL_COLLECT_ENABLED 让资讯池持续攒素材。"
             )
 
         signature = self._build_signature(prepared, window)
@@ -610,7 +693,7 @@ class MarketBriefAnalyzer:
             provider=provider,
         )
 
-        chunks = split_into_chunks(prepared, max_chars=CHUNK_MAX_CHARS)
+        chunks = split_within_call_budget(prepared, max_calls=state.max_calls)
         self._progress(progress, phase="analyzing", total_chunks=len(chunks), current_chunk=0)
 
         phase_section = self._phase_prompt_section()
@@ -888,6 +971,7 @@ class MarketBriefAnalyzer:
                 "total_items": len(prepared),
                 "cited_items": len(covered),
             },
+            "evidence": collect_evidence(prepared, result),
             "degraded": degraded,
             "degraded_reason": degraded_reason,
             "llm_calls": state.calls,

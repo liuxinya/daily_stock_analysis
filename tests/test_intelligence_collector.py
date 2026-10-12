@@ -66,8 +66,17 @@ class RunCollectOnceTest(unittest.TestCase):
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["saved_count"], 15)
         self.assertEqual(result["created_sources"], 2)
+        # 调用方（消息面汇总的空窗口提示）要能把失败原因转述给用户
+        self.assertEqual(result["first_error"], "upstream request failed")
         service.ensure_default_sources_enabled.assert_called_once()
         service.fetch_enabled_sources.assert_called_once()
+
+    def test_first_error_is_none_when_every_source_succeeded(self) -> None:
+        service = _fake_service(results=[{"ok": True, "saved_count": 1}])
+        with patch("src.services.intelligence_service.IntelligenceService", return_value=service):
+            result = run_collect_once(config=_config())
+        self.assertEqual(result["failed"], 0)
+        self.assertIsNone(result["first_error"])
 
     def test_unexpected_error_is_reported_not_raised(self) -> None:
         """调度器会吞掉异常，所以这里必须自己把失败变成可观测的返回值。"""

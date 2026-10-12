@@ -425,17 +425,19 @@ const settingsHelpZhCN: SettingsHelpMap = {
   },
   'settings.data_source.market_brief': {
     title: '消息面汇总',
-    summary: '按当前时段（盘前 / 盘中 / 盘后 / 周末 / 节假日）对资讯池在对应时间窗内的消息做 AI 汇总。',
-    usage: 'MARKET_BRIEF_ENABLED 控制定时自动生成；三个时点/间隔配置决定什么时候出稿；其余为成本与超时上限。',
+    summary: '按当前时段（盘前 / 盘中 / 盘后 / 周末 / 节假日）对对应时间窗内的消息做 AI 汇总。',
+    usage: 'MARKET_BRIEF_ENABLED 控制定时自动生成；三个时点/间隔配置决定什么时候出稿；其余为取数范围、成本与超时上限。',
     valueNotes: [
       '时段与时间窗由交易日历推导：盘前与休市日回看到上一个交易日收盘，盘中回看到今日开盘。',
-      '数据前提是 NEWS_INTEL_COLLECT_ENABLED 已开启并持续采集，否则窗口内没有素材。',
+      '取数主路径是汇总那一刻直拉各快讯接口（MARKET_BRIEF_LIVE_FETCH_TIMEOUT_SEC 控制整轮预算，设 0 关闭），不配置也能用；本地资讯池里已攒下的内容会合并进来去重。',
+      'MARKET_BRIEF_MAX_ITEMS 超量时按时间分层抽样，而不是截最新 N 条，所以整个窗口都会被覆盖到。',
       '开关只管定时生成；页面上的手动生成按钮不受它限制。',
     ],
-    impact: ['影响是否自动出稿、出稿频率，以及单次汇总的 LLM 成本。'],
+    impact: ['影响是否自动出稿、出稿频率、单次汇总覆盖的消息量，以及 LLM 成本与等待时间。'],
     notes: [
       '交易日历不可用时不会出稿，避免基于错误窗口生成汇总。',
-      '结论经服务端校验：引用词在资讯原文里查不到的整条丢弃，关注标的必须挂在已确认的板块上。',
+      '结论经服务端校验：引用词在资讯原文里查不到的整条丢弃，关注股票必须挂在已确认的板块上。',
+      '直拉里能深翻历史的只有雪球与第一财经，其余平台单轮只覆盖最近几小时；更久远的窗口仍要靠资讯池持续采集。',
     ],
   },
   'settings.data_source.news_intel_collect': {
@@ -1693,17 +1695,19 @@ const settingsHelpEnUS: SettingsHelpMap = {
   },
   'settings.data_source.market_brief': {
     title: 'Market Brief',
-    summary: 'AI summary of the intelligence pool for the current session phase (pre-market / intraday / post-market / weekend / holiday).',
-    usage: 'MARKET_BRIEF_ENABLED gates scheduled generation; the time/interval settings decide when; the rest cap cost and timeouts.',
+    summary: 'AI summary of the news in the current session phase window (pre-market / intraday / post-market / weekend / holiday).',
+    usage: 'MARKET_BRIEF_ENABLED gates scheduled generation; the time/interval settings decide when; the rest cap coverage, cost and timeouts.',
     valueNotes: [
       'Phase and window come from the trading calendar: pre-market and closed days look back to the previous close, intraday to today\'s open.',
-      'Requires NEWS_INTEL_COLLECT_ENABLED so the pool actually has items in the window.',
+      'Material is pulled straight from the realtime feeds at brief time (MARKET_BRIEF_LIVE_FETCH_TIMEOUT_SEC caps the whole round; 0 disables it), so no setup is required; anything already in the local pool is merged in and deduped.',
+      'Above MARKET_BRIEF_MAX_ITEMS the items are sampled evenly across the window rather than truncated to the newest, so the whole window stays represented.',
       'The toggle only affects scheduled generation; the manual button on the page always works.',
     ],
-    impact: ['Controls whether briefs are produced automatically, how often, and the LLM cost per brief.'],
+    impact: ['Controls whether briefs are produced automatically, how often, how much news each one covers, and the LLM cost and wait.'],
     notes: [
       'No brief is produced when the trading calendar is unavailable, to avoid summarising a wrong window.',
       'Claims are server-validated: entries whose cited terms are absent from the source text are dropped, and watch items must hang off a confirmed sector.',
+      'Only Xueqiu and Yicai can be paged deep into history; the other feeds only cover the last few hours, so longer windows still rely on the pool collecting continuously.',
     ],
   },
   'settings.data_source.news_intel_collect': {

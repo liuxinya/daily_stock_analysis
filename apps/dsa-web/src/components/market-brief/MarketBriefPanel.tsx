@@ -1,7 +1,10 @@
 import type React from 'react';
+import { useMemo, useState } from 'react';
 
 import { Badge, Card, InlineAlert } from '../common';
-import type { MarketBriefPayload } from '../../api/marketBrief';
+import type { BriefEvidence, MarketBriefPayload } from '../../api/marketBrief';
+import { BriefEvidenceButton } from './BriefEvidenceButton';
+import { BriefEvidenceDrawer } from './BriefEvidenceDrawer';
 import {
   directionBadgeVariant,
   directionLabel,
@@ -31,13 +34,25 @@ const TermChips: React.FC<{ terms: string[] }> = ({ terms }) => {
 /**
  * 汇总结果面板。
  *
- * 事实层（关键消息 / 板块方向 / 要点）与推断层（关注标的）刻意分开呈现：
+ * 事实层（关键消息 / 板块方向 / 要点）与推断层（关注股票）刻意分开呈现：
  * 事实层每条都经过服务端 grounding 校验，引用词必须在原文里逐字出现；
  * 推断层是模型基于板块的知识映射，原文未必点名，必须显式标注。
  */
 export const MarketBriefPanel: React.FC<MarketBriefPanelProps> = ({ payload }) => {
   const { result, grounding, coverage, window } = payload;
   const droppedCount = grounding?.droppedCount ?? 0;
+
+  // 旧版本生成的汇总没有 evidence 字段，`?? []` 兜底 —— 表现为「暂时没有信源入口」，重新汇总即恢复。
+  const evidenceById = useMemo(
+    () => new Map<number, BriefEvidence>((payload.evidence ?? []).map((item) => [item.id, item])),
+    [payload.evidence],
+  );
+  const [drawerItems, setDrawerItems] = useState<BriefEvidence[]>([]);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const openEvidence = (items: BriefEvidence[]) => {
+    setDrawerItems(items);
+    setDrawerOpen(true);
+  };
 
   return (
     <div className="space-y-4">
@@ -107,7 +122,14 @@ export const MarketBriefPanel: React.FC<MarketBriefPanelProps> = ({ payload }) =
                 {event.detail ? (
                   <p className="text-sm leading-relaxed text-secondary-text">{event.detail}</p>
                 ) : null}
-                <TermChips terms={event.mentionedTerms} />
+                <div className="flex flex-wrap items-center gap-2">
+                  <TermChips terms={event.mentionedTerms} />
+                  <BriefEvidenceButton
+                    ids={event.evidenceIds}
+                    evidenceById={evidenceById}
+                    onOpen={openEvidence}
+                  />
+                </div>
               </li>
             ))}
           </ul>
@@ -130,7 +152,14 @@ export const MarketBriefPanel: React.FC<MarketBriefPanelProps> = ({ payload }) =
                 {sector.reason ? (
                   <p className="text-sm leading-relaxed text-secondary-text">{sector.reason}</p>
                 ) : null}
-                <TermChips terms={sector.mentionedTerms} />
+                <div className="flex flex-wrap items-center gap-2">
+                  <TermChips terms={sector.mentionedTerms} />
+                  <BriefEvidenceButton
+                    ids={sector.evidenceIds}
+                    evidenceById={evidenceById}
+                    onOpen={openEvidence}
+                  />
+                </div>
               </li>
             ))}
           </ul>
@@ -140,7 +169,7 @@ export const MarketBriefPanel: React.FC<MarketBriefPanelProps> = ({ payload }) =
       {result.watchList.length > 0 ? (
         <Card variant="bordered" padding="md">
           <div className="mb-1 flex flex-wrap items-baseline gap-2">
-            <h3 className="text-sm font-semibold text-foreground">关注标的</h3>
+            <h3 className="text-sm font-semibold text-foreground">关注股票</h3>
             <span className="text-xxs text-muted-text">由已确认的板块方向推断，非资讯原文内容</span>
           </div>
           <ul className="mt-3 space-y-2">
@@ -177,7 +206,14 @@ export const MarketBriefPanel: React.FC<MarketBriefPanelProps> = ({ payload }) =
                 {item.detail ? (
                   <p className="text-sm leading-relaxed text-secondary-text">{item.detail}</p>
                 ) : null}
-                <TermChips terms={item.mentionedTerms} />
+                <div className="flex flex-wrap items-center gap-2">
+                  <TermChips terms={item.mentionedTerms} />
+                  <BriefEvidenceButton
+                    ids={item.evidenceIds}
+                    evidenceById={evidenceById}
+                    onOpen={openEvidence}
+                  />
+                </div>
               </li>
             ))}
           </ul>
@@ -197,6 +233,12 @@ export const MarketBriefPanel: React.FC<MarketBriefPanelProps> = ({ payload }) =
           </ul>
         </Card>
       ) : null}
+
+      <BriefEvidenceDrawer
+        isOpen={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        items={drawerItems}
+      />
     </div>
   );
 };

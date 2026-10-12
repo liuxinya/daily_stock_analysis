@@ -1017,7 +1017,8 @@ class Config:
 
     # === 消息面汇总（盘前/盘中/周末 AI 汇总）配置 ===
     market_brief_enabled: bool = False  # 是否启用定时生成消息面汇总（手动触发不受此开关限制）
-    market_brief_max_items: int = 120  # 单次汇总最多送入模型的资讯条数
+    market_brief_max_items: int = 300  # 单次汇总最多送入模型的资讯条数（超量时按时间分层抽样）
+    market_brief_live_fetch_timeout_sec: int = 30  # 汇总时直拉快讯接口的整轮预算（秒）；0 = 只读本地资讯池
     market_brief_min_window_minutes: int = 90  # 时间窗下限（分钟）；刚开盘时把起点向前延长以纳入隔夜消息
     market_brief_analysis_cache_hours: int = 2  # 同一批消息 + 同一模型的汇总结果复用时长（小时）
     market_brief_analysis_max_llm_calls: int = 12  # 单次汇总允许的模型调用次数上限
@@ -1418,10 +1419,17 @@ class Config:
         setup_env()
 
         # === 智能代理配置 (关键修复) ===
-        # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败
+        # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败。
+        # 注意要连 ALL_PROXY 一起看：只设置 ALL_PROXY（例如某些工具会往 shell 里注入
+        # all_proxy=socks5h://...）时，requests 同样会用它去代理所有请求，
+        # 这块逻辑如果只认 HTTP_PROXY 就会被整段跳过，数据源照样被代理劫走。
         http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
-        if http_proxy:
-            # 国内金融数据源域名列表
+        any_proxy = http_proxy or (
+            os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+            or os.getenv('ALL_PROXY') or os.getenv('all_proxy')
+        )
+        if any_proxy:
+            # 数据源与资讯源域名列表：这些请求一律直连，不走代理
             domestic_domains = [
                 'eastmoney.com',   # 东方财富 (Efinance/Akshare)
                 'sina.com.cn',     # 新浪财经 (Akshare)
@@ -1432,6 +1440,11 @@ class Config:
                 'szse.cn',         # 深交所
                 'csindex.com.cn',  # 中证指数
                 'cninfo.com.cn',   # 巨潮资讯
+                '10jqka.com.cn',   # 同花顺 (Akshare 快讯)
+                'cls.cn',          # 财联社 (实时新闻电报)
+                'xueqiu.com',      # 雪球 (实时新闻)
+                'yicai.com',       # 第一财经 (实时新闻)
+                'busiyi.world',    # NewsNow 聚合 (实时新闻 + 资讯源采集)
                 'localhost',
                 '127.0.0.1'
             ]
@@ -1449,8 +1462,9 @@ class Config:
             os.environ['no_proxy'] = final_no_proxy
 
             # 确保 HTTP_PROXY 也被正确设置（以防仅在 .env 中定义但未导出）
-            os.environ['HTTP_PROXY'] = http_proxy
-            os.environ['http_proxy'] = http_proxy
+            if http_proxy:
+                os.environ['HTTP_PROXY'] = http_proxy
+                os.environ['http_proxy'] = http_proxy
 
             # HTTPS_PROXY 同理
             https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
@@ -2013,8 +2027,12 @@ class Config:
             ),
             market_brief_enabled=parse_env_bool(os.getenv('MARKET_BRIEF_ENABLED'), False),
             market_brief_max_items=parse_env_int(
-                os.getenv('MARKET_BRIEF_MAX_ITEMS'), 120,
-                field_name='MARKET_BRIEF_MAX_ITEMS', minimum=5, maximum=500,
+                os.getenv('MARKET_BRIEF_MAX_ITEMS'), 300,
+                field_name='MARKET_BRIEF_MAX_ITEMS', minimum=5, maximum=800,
+            ),
+            market_brief_live_fetch_timeout_sec=parse_env_int(
+                os.getenv('MARKET_BRIEF_LIVE_FETCH_TIMEOUT_SEC'), 30,
+                field_name='MARKET_BRIEF_LIVE_FETCH_TIMEOUT_SEC', minimum=0, maximum=120,
             ),
             market_brief_min_window_minutes=parse_env_int(
                 os.getenv('MARKET_BRIEF_MIN_WINDOW_MINUTES'), 90,

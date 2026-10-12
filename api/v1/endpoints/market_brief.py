@@ -91,12 +91,13 @@ def submit_job(payload: Optional[MarketBriefJobRequest] = None) -> MarketBriefJo
     request = payload or MarketBriefJobRequest()
     try:
         service = MarketBriefService()
-        # 提交前先确认窗口内有素材（为空时会就地采集一轮），空窗口在这里就返回 400，
-        # 而不是变成一个必然失败的后台 job
         window = service.current_window()
-        items, _ = service.ensure_items(window)
-        if not items:
-            raise MarketBriefAnalyzerError(service.empty_window_message(window))
+        # 关闭直拉（预算 0）时沿用原来的同步预检：空窗口在这里就 400，不变成必然失败的 job。
+        # 开着直拉时**不能**在这里预检 —— 那会同步打一轮上游（预算 30 秒），
+        # 点「生成汇总」要等半分钟才拿到 job_id；素材判定交给 job 自己（它的
+        # fetching / reading 阶段会把真实原因写进 job.error，前端已有渲染）。
+        if service.live_fetch_budget <= 0:
+            service.load_items_or_raise(window)
         job = MarketBriefJobManager.get_instance().submit(service=service, force=request.force)
         return MarketBriefJobResponse(**job.to_dict())
     except (MarketBriefAnalyzerError, MarketBriefServiceError) as exc:

@@ -6,11 +6,13 @@
 
 时间基准约定：所有对外暴露的 published_at 都是 timezone-aware。
 akshare 与第一财经返回北京本地 naive 时间，NewsNow 与雪球返回 epoch 毫秒（UTC 基准），
-在各自的适配器里补齐时区，避免 naive 与 aware 混用导致 8 小时偏差。
+财联社返回 epoch 秒（UTC 基准），在各自的适配器里补齐时区，避免 naive 与 aware 混用导致 8 小时偏差。
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import threading
@@ -34,6 +36,7 @@ PROVIDER_AKSHARE = "akshare"
 PROVIDER_NEWSNOW = "newsnow"
 PROVIDER_XUEQIU = "xueqiu"
 PROVIDER_YICAI = "yicai"
+PROVIDER_CLS = "cls"
 PROVIDER_AGGREGATE = "aggregate"
 PROVIDER_UNAVAILABLE = ""
 
@@ -59,7 +62,15 @@ _YICAI_BRIEF_REFERER = f"{_YICAI_BASE_URL}/brief/"
 _YICAI_MAX_PAGE_SIZE = 50
 _YICAI_MAX_PAGES = 4
 
-# 直连上游（雪球、第一财经）共用的 UA
+_CLS_BASE_URL = "https://www.cls.cn"
+# 首页右侧「财联社电报」小组件就是这个缓存接口（name=telegraph），单次返回最新约 20 条。
+_CLS_TELEGRAPH_PATH = "/api/cache"
+_CLS_TELEGRAPH_NAME = "telegraph"
+# 财联社 Web 端所有接口都带这组固定参数，并按参数算一个 sign 签名；缺失或签名不符时上游拒绝。
+# sv 是 Web 端版本号，上游升级后若开始拒绝旧版本，同步这里即可（sign 本身按实际参数动态计算）。
+_CLS_COMMON_PARAMS: Dict[str, str] = {"app": "CailianpressWeb", "os": "web", "sv": "8.7.9"}
+
+# 直连上游（雪球、第一财经、财联社）共用的 UA
 _DIRECT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 daily-stock-analysis-realtime/1.0"
@@ -67,7 +78,35 @@ _DIRECT_USER_AGENT = (
 # 剩余预算低于此值就不再翻页：塞一个必然超时的请求只会白丢已抓到的部分
 _CURSOR_MIN_REQUEST_BUDGET_SEC = 1.0
 
+# === 按时间窗回看（消息面汇总用）===
+# 页面是「看现在有什么新消息」，单轮 50 条就够；消息面汇总要回看一两天，只有这两家
+# 游标源能真的翻到那么深（实测雪球可回看 ~86 小时、第一财经 ~107 小时，其余平台单轮
+# 只覆盖 0.5~4 小时且无历史翻页；财联社的 last_time 被上游忽略，翻不动）。
+# 这里的上限只给窗口回看路径用，页面的 _XUEQIU_MAX_PAGES / _YICAI_MAX_PAGES 不受影响。
+_WINDOW_FETCH_SPECS: Dict[str, Dict[str, int]] = {
+    "xueqiu": {"max_pages": 60, "max_items": 600},
+    "yicai": {"max_pages": 12, "max_items": 600},
+}
+# 无深度翻页的平台按这个条数单轮拉一次（上游给多少算多少，普遍远低于此值）
+_WINDOW_SINGLE_SHOT_ITEMS = 100
+
 _BRACKET_TITLE_PATTERN = re.compile(r"^\s*[【\[]([^】\]]{2,60})[】\]]\s*(.*)$", re.S)
+
+# === 关键词搜索新闻（用户任意输入关键词，按全文检索拉新闻/深度）===
+# 复用市场级的时间归一化、链接白名单与短 TTL 缓存，只新增各平台的全文搜索上游。
+# 只有提供全文检索的上游能服务任意关键词：东方财富（JSONP 全文检索）、财联社（电报 + 深度）。
+# 同花顺快讯接口是「证券代码 + marketId」维度、不接受自由关键词，因此不进搜索路径。
+TAG_DEPTH = "深度"
+
+# 东方财富全文搜索（JSONP）。
+_EM_SEARCH_URL = "https://search-api-web.eastmoney.com/search/jsonp"
+_EM_SEARCH_CALLBACK = "jsonp_dsa_realtime"  # JSONP 回调名，仅用于剥壳，无业务含义
+
+# 财联社全文搜索接口（keyword-based）；签名只覆盖 app/os/sv 公共参数，复用 _cls_sign。
+_CLS_SEARCH_PATH = "/api/sw"
+_CLS_SEARCH_PAGE_SIZE = 30
+# 搜索结果里命中关键词的 <em> 高亮标签，归一化前单独剥除（见 normalize_cls_search）。
+_EM_HIGHLIGHT_PATTERN = re.compile(r"</?em>", re.IGNORECASE)
 
 
 class RealtimeNewsServiceError(ValueError):
@@ -76,6 +115,29 @@ class RealtimeNewsServiceError(ValueError):
 
 class RealtimeNewsUpstreamError(RuntimeError):
     """上游平台不可用（超时、HTTP 失败、响应格式异常），映射为 503。"""
+
+
+def _request_failure_reason(exc: Exception) -> str:
+    """把 requests 的异常归成一个固定词表里的短语，附在上游错误信息后面。
+
+    只报原因类别、不回显异常原文：这条信息会经 API 出现在前端。代理和 TLS 这两类
+    环境问题以前全被抹平成「request failed」，页面上看不出到底是上游挂了还是本机
+    代理把请求劫走了。
+    """
+    if isinstance(exc, requests.exceptions.InvalidSchema) and "socks" in str(exc).lower():
+        return "SOCKS proxy configured but PySocks is not installed"
+    if isinstance(exc, requests.exceptions.ProxyError):
+        return "proxy error"
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "TLS error"
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        return f"HTTP {status}" if status else "request failed"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "connection error"
+    return "request failed"
 
 
 @dataclass(frozen=True)
@@ -88,6 +150,9 @@ class RealtimeNewsPlatform:
     upstream: str = ""
     # 上游是否提供发布时间；为 False 的平台不参与聚合排序
     has_published_at: bool = True
+    # 是否支持「按任意关键词全文搜索」。为 False 的平台在搜索模式下返回空态，
+    # 市场级快讯仍走原有 provider，与此开关无关。
+    supports_search: bool = False
 
     @property
     def available(self) -> bool:
@@ -111,9 +176,10 @@ class RealtimeNewsEntry:
 # 当前每个平台都有可用上游；`PROVIDER_UNAVAILABLE` 仍保留给「已知平台但暂无源」的占位场景
 # （接口返回 200 + 空列表，前端展示空态），需要时直接加一行即可。
 PLATFORMS: Tuple[RealtimeNewsPlatform, ...] = (
-    RealtimeNewsPlatform(AGGREGATE_PLATFORM_KEY, "财经热榜", PROVIDER_AGGREGATE),
+    RealtimeNewsPlatform(AGGREGATE_PLATFORM_KEY, "财经热榜", PROVIDER_AGGREGATE, supports_search=True),
+    RealtimeNewsPlatform("cls", "财联社", PROVIDER_CLS, _CLS_TELEGRAPH_NAME, supports_search=True),
     RealtimeNewsPlatform("ths", "同花顺", PROVIDER_AKSHARE, "stock_info_global_ths"),
-    RealtimeNewsPlatform("eastmoney", "东方财富", PROVIDER_AKSHARE, "stock_info_global_em"),
+    RealtimeNewsPlatform("eastmoney", "东方财富", PROVIDER_AKSHARE, "stock_info_global_em", supports_search=True),
     RealtimeNewsPlatform("wallstreetcn", "华尔街见闻", PROVIDER_NEWSNOW, "wallstreetcn-quick"),
     RealtimeNewsPlatform("xueqiu", "雪球", PROVIDER_XUEQIU, "livenews"),
     RealtimeNewsPlatform("jin10", "金十数据", PROVIDER_NEWSNOW, "jin10"),
@@ -177,6 +243,20 @@ def _parse_epoch_millis(value: Any) -> Optional[datetime]:
         return None
     try:
         return datetime.fromtimestamp(millis / 1000, tz=SHANGHAI_TZ)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _parse_epoch_seconds(value: Any) -> Optional[datetime]:
+    """解析 epoch 秒时间戳（UTC 基准），落到 Asia/Shanghai 的 aware 值。"""
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(seconds, tz=SHANGHAI_TZ)
     except (OverflowError, OSError, ValueError):
         return None
 
@@ -415,6 +495,96 @@ def normalize_yicai_payload(
     return entries
 
 
+def _cls_sign(params: Dict[str, str]) -> str:
+    """复刻财联社 Web 端签名：参数按键名排序拼成 ``k=v&k=v`` 后做 ``md5(sha1(query))``。"""
+    query = "&".join(f"{key}={params[key]}" for key in sorted(params))
+    digest = hashlib.sha1(query.encode("utf-8")).hexdigest()
+    return hashlib.md5(digest.encode("utf-8")).hexdigest()
+
+
+def normalize_cls_payload(
+    payload: Any,
+    platform: RealtimeNewsPlatform,
+    *,
+    limit: int,
+) -> List[RealtimeNewsEntry]:
+    """把财联社电报（``data.roll_data``）的 JSON 响应归一化成 RealtimeNewsEntry。
+
+    上游给了独立的 ``title`` 字段（电报标题，正文开头常重复成「【标题】正文」），
+    缺标题时退回按 `【】` 拆分、再退回摘要开头兜一个。``level`` 为 A/B 的是站点标红的
+    重要电报（A 还加粗），映射成前端的 `重要` 徽标。
+    """
+    if not isinstance(payload, dict):
+        raise RealtimeNewsUpstreamError("invalid Cls response: expected object")
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise RealtimeNewsUpstreamError("invalid Cls response: missing data")
+    roll = data.get("roll_data")
+    if not isinstance(roll, list):
+        raise RealtimeNewsUpstreamError("invalid Cls response: missing roll_data")
+
+    entries: List[RealtimeNewsEntry] = []
+    for item in roll[:max(0, limit)]:
+        if not isinstance(item, dict):
+            continue
+        if item.get("is_ad"):  # 广告位不进快讯流
+            continue
+        # content 是完整正文，brief 是列表页截断版，优先用 content
+        body = _clean_text(item.get("content") or item.get("brief"))
+        title = _clean_text(item.get("title"))
+        if title:
+            # 正文开头常把标题重复成「【标题】正文」，剥掉只留正文做摘要
+            prefix = f"【{title}】"
+            if body.startswith(prefix):
+                body = _clean_text(body[len(prefix):])
+        else:
+            title, remainder = _split_bracket_title(body)
+            if title:
+                body = remainder
+            else:
+                title = _fallback_title(body)
+        if not title:
+            continue
+        article_id = _clean_text(item.get("id"))
+        entries.append(RealtimeNewsEntry(
+            platform=platform.key,
+            platform_label=platform.label,
+            title=title,
+            summary=body if body != title else "",
+            url=f"{_CLS_BASE_URL}/detail/{article_id}" if article_id else "",
+            # ctime 是 epoch 秒（UTC 基准），落到 Asia/Shanghai 的 aware 值
+            published_at=_parse_epoch_seconds(item.get("ctime")),
+            tag="重要" if str(item.get("level") or "").strip().upper() in {"A", "B"} else "",
+        ))
+    return entries
+
+
+def _fetch_cls(platform: RealtimeNewsPlatform, *, limit: int, timeout: float) -> List[RealtimeNewsEntry]:
+    """财联社电报。直连首页「财联社电报」缓存接口，单次 GET 即可，无需 cookie。"""
+    params = dict(_CLS_COMMON_PARAMS)
+    params["name"] = platform.upstream
+    params["sign"] = _cls_sign(params)
+    try:
+        response = requests.get(
+            f"{_CLS_BASE_URL}{_CLS_TELEGRAPH_PATH}",
+            params=params,
+            timeout=timeout,
+            headers={
+                "User-Agent": _DIRECT_USER_AGENT,
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Referer": f"{_CLS_BASE_URL}/",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        raise RealtimeNewsUpstreamError(f"Cls request failed: {_request_failure_reason(exc)}") from exc
+    except ValueError as exc:  # json 解析失败
+        raise RealtimeNewsUpstreamError("Cls returned invalid JSON") from exc
+    return normalize_cls_payload(payload, platform, limit=limit)
+
+
 def _fetch_akshare(platform: RealtimeNewsPlatform, *, limit: int, timeout: float) -> List[RealtimeNewsEntry]:
     """akshare 不暴露 timeout，用独立线程兜一个 deadline，避免上游卡死拖住整个请求。"""
 
@@ -470,7 +640,9 @@ def _fetch_newsnow(
         response.raise_for_status()
         payload = response.json()
     except requests.RequestException as exc:
-        raise RealtimeNewsUpstreamError(f"NewsNow request failed: {platform.upstream}") from exc
+        raise RealtimeNewsUpstreamError(
+            f"NewsNow request failed: {platform.upstream} ({_request_failure_reason(exc)})"
+        ) from exc
     except ValueError as exc:  # json 解析失败
         raise RealtimeNewsUpstreamError(f"NewsNow returned invalid JSON: {platform.upstream}") from exc
     return normalize_newsnow_payload(payload, platform, limit=limit)
@@ -519,7 +691,9 @@ def _xueqiu_session_with_token(*, timeout: float, force_refresh: bool = False) -
             response.raise_for_status()
         except requests.RequestException as exc:
             session.close()
-            raise RealtimeNewsUpstreamError("Xueqiu bootstrap request failed") from exc
+            raise RealtimeNewsUpstreamError(
+                f"Xueqiu bootstrap request failed: {_request_failure_reason(exc)}"
+            ) from exc
         if not session.cookies.get(_XUEQIU_TOKEN_COOKIE):
             session.close()
             raise RealtimeNewsUpstreamError(
@@ -540,7 +714,7 @@ def _fetch_xueqiu_page(*, max_id: str, timeout: float) -> Any:
                 timeout=timeout,
             )
         except requests.RequestException as exc:
-            raise RealtimeNewsUpstreamError("Xueqiu request failed") from exc
+            raise RealtimeNewsUpstreamError(f"Xueqiu request failed: {_request_failure_reason(exc)}") from exc
         if response.status_code in _XUEQIU_AUTH_STATUS and attempt == 0:
             logger.info("Xueqiu rejected the anonymous token (HTTP %s), refreshing", response.status_code)
             continue
@@ -562,6 +736,7 @@ def _fetch_cursor_pages(
     fetch_page: Callable[[str, int, float], Any],
     normalize: Callable[..., List[RealtimeNewsEntry]],
     next_cursor: Callable[[Any], str],
+    stop_before: Optional[datetime] = None,
 ) -> List[RealtimeNewsEntry]:
     """按游标翻页凑满 limit 条，供直连上游的 provider 共用。
 
@@ -572,6 +747,10 @@ def _fetch_cursor_pages(
     ``fetch_page(cursor, index, remaining)`` 拿一页原始 payload；
     ``next_cursor(payload)`` 从原始 payload 推下一页游标（不能用归一化后的结果推，
     归一化会丢条目）；返回空串表示没有下一页。
+
+    ``stop_before`` 给「按时间窗回看」的调用方用（见 ``fetch_window_entries``）：
+    这些上游都是时间倒序，本页已经翻过了该时刻就没必要再往前，补完本页即停。
+    默认 ``None`` 时只按 limit / 预算 / 页数上限停，与原行为一致。
     """
     deadline = time.monotonic() + timeout
     entries: List[RealtimeNewsEntry] = []
@@ -610,20 +789,41 @@ def _fetch_cursor_pages(
         # 没有新条目或游标没前进就停，避免上游异常时空转
         if len(entries) >= limit or not added or not following or following == cursor:
             break
+        # 按时间窗回看时，本页已经翻过窗口起点就不必再往前
+        if stop_before is not None and _page_reaches_back_to(page_entries, stop_before):
+            break
         cursor = following
     return entries
 
 
-def _fetch_xueqiu(platform: RealtimeNewsPlatform, *, limit: int, timeout: float) -> List[RealtimeNewsEntry]:
+def _page_reaches_back_to(entries: List[RealtimeNewsEntry], stop_before: datetime) -> bool:
+    """本页最旧的带时间条目是否已早于 ``stop_before``。
+
+    整页都没有发布时间时返回 False —— 无法判断深度，交给 limit / 页数上限兜底，
+    免得把「上游这一页恰好缺时间」误判成「已经翻到窗口外」而提前收手。
+    """
+    dated = [entry.published_at for entry in entries if entry.published_at is not None]
+    return bool(dated) and min(dated) < stop_before
+
+
+def _fetch_xueqiu(
+    platform: RealtimeNewsPlatform,
+    *,
+    limit: int,
+    timeout: float,
+    max_pages: int = _XUEQIU_MAX_PAGES,
+    stop_before: Optional[datetime] = None,
+) -> List[RealtimeNewsEntry]:
     """雪球 7×24 快讯。上游每页硬性只给 10 条（``count`` 传再大也无效）。"""
     return _fetch_cursor_pages(
         platform,
         limit=limit,
         timeout=timeout,
-        max_pages=_XUEQIU_MAX_PAGES,
+        max_pages=max_pages,
         fetch_page=lambda cursor, _index, remaining: _fetch_xueqiu_page(max_id=cursor, timeout=remaining),
         normalize=normalize_xueqiu_payload,
         next_cursor=lambda payload: _clean_text(payload.get("next_max_id")),
+        stop_before=stop_before,
     )
 
 
@@ -649,7 +849,7 @@ def _fetch_yicai_page(*, nid: str, page: int, page_size: int, timeout: float) ->
         response.raise_for_status()
         return response.json()
     except requests.RequestException as exc:
-        raise RealtimeNewsUpstreamError("Yicai request failed") from exc
+        raise RealtimeNewsUpstreamError(f"Yicai request failed: {_request_failure_reason(exc)}") from exc
     except ValueError as exc:  # json 解析失败
         raise RealtimeNewsUpstreamError("Yicai returned invalid JSON") from exc
 
@@ -666,20 +866,246 @@ def _yicai_next_cursor(payload: Any, *, page_size: int) -> str:
     return _clean_text(items[-1].get("LiveID") or items[-1].get("id"))
 
 
-def _fetch_yicai(platform: RealtimeNewsPlatform, *, limit: int, timeout: float) -> List[RealtimeNewsEntry]:
+def _fetch_yicai(
+    platform: RealtimeNewsPlatform,
+    *,
+    limit: int,
+    timeout: float,
+    max_pages: int = _YICAI_MAX_PAGES,
+    stop_before: Optional[datetime] = None,
+) -> List[RealtimeNewsEntry]:
     """第一财经 7×24 快讯。pagesize 上限 50，默认 limit 一页就够，超了才翻页。"""
     page_size = max(1, min(limit, _YICAI_MAX_PAGE_SIZE))
     return _fetch_cursor_pages(
         platform,
         limit=limit,
         timeout=timeout,
-        max_pages=_YICAI_MAX_PAGES,
+        max_pages=max_pages,
         fetch_page=lambda cursor, index, remaining: _fetch_yicai_page(
             nid=cursor, page=index + 1, page_size=page_size, timeout=remaining
         ),
         normalize=normalize_yicai_payload,
         next_cursor=lambda payload: _yicai_next_cursor(payload, page_size=page_size),
+        stop_before=stop_before,
     )
+
+
+def _https_url(raw: Any) -> str:
+    """个股上游链接直接渲染成 ``<a href>``，与雪球/第一财经同样只放行 https：
+    http 升到 https，其余（含 javascript: 等）一律丢弃。"""
+    value = _clean_text(raw)
+    if value.startswith("http://"):
+        return "https://" + value[len("http://"):]
+    return value if value.startswith("https://") else ""
+
+
+def _merge_sort_dedupe(entries: List[RealtimeNewsEntry]) -> List[RealtimeNewsEntry]:
+    """按发布时间倒序排序后按标题去重，保留最新版本。聚合与单平台多来源合并共用。"""
+    ordered = sorted(
+        entries,
+        key=lambda item: item.published_at or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    seen: set = set()
+    deduped: List[RealtimeNewsEntry] = []
+    for entry in ordered:
+        marker = _dedupe_key(entry.title) or entry.url
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(entry)
+    return deduped
+
+
+def _combine_search_sources(
+    sources: List[Callable[[], List[RealtimeNewsEntry]]], *, limit: int
+) -> List[RealtimeNewsEntry]:
+    """顺序拉取一个平台的多个搜索来源（如财联社电报 + 深度），单一来源失败不拖垮其余；
+    全部来源都失败才判定平台不可用（抛出首个异常 → 503）。"""
+    results: List[List[RealtimeNewsEntry]] = []
+    errors: List[RealtimeNewsUpstreamError] = []
+    for source in sources:
+        try:
+            results.append(source())
+        except RealtimeNewsUpstreamError as exc:
+            errors.append(exc)
+    if not results and errors:
+        raise errors[0]
+    merged = [entry for group in results for entry in group]
+    return _merge_sort_dedupe(merged)[:limit]
+
+
+def normalize_em_search(payload: Any, platform: RealtimeNewsPlatform, *, limit: int) -> List[RealtimeNewsEntry]:
+    """东方财富全文搜索 ``result.cmsArticleWebOld`` → 新闻条目。date 是北京本地时间。"""
+    if not isinstance(payload, dict):
+        raise RealtimeNewsUpstreamError("invalid Eastmoney search response: expected object")
+    result = payload.get("result")
+    rows = result.get("cmsArticleWebOld") if isinstance(result, dict) else None
+    if not isinstance(rows, list):
+        return []
+    entries: List[RealtimeNewsEntry] = []
+    for row in rows[:max(0, limit)]:
+        if not isinstance(row, dict):
+            continue
+        title = _clean_text(row.get("title"))
+        summary = _clean_text(row.get("content"))
+        if not title:
+            title = _fallback_title(summary)
+        if not title:
+            continue
+        source = _clean_text(row.get("mediaName"))
+        entries.append(RealtimeNewsEntry(
+            platform=platform.key,
+            platform_label=platform.label,
+            title=title,
+            summary=summary if summary != title else "",
+            url=_https_url(row.get("url")),
+            published_at=_parse_beijing_time(row.get("date")),
+            tag=source if source and source != platform.label else "",
+        ))
+    return entries
+
+
+def _fetch_em_search(keyword: str, platform: RealtimeNewsPlatform, *, limit: int, timeout: float) -> List[RealtimeNewsEntry]:
+    """东方财富按关键词走站内全文搜索（JSONP）。"""
+    param = {
+        "uid": "",
+        "keyword": keyword,
+        "type": ["cmsArticleWebOld"],
+        "client": "web",
+        "clientType": "web",
+        "clientVersion": "curr",
+        "param": {
+            "cmsArticleWebOld": {
+                "searchScope": "default",
+                "sort": "default",
+                "pageIndex": 1,
+                "pageSize": max(1, min(limit, 50)),
+                "preTag": "",
+                "postTag": "",
+            }
+        },
+    }
+    try:
+        response = requests.get(
+            _EM_SEARCH_URL,
+            params={"cb": _EM_SEARCH_CALLBACK, "param": json.dumps(param, ensure_ascii=False)},
+            timeout=timeout,
+            headers={
+                "User-Agent": _DIRECT_USER_AGENT,
+                "Accept": "*/*",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Referer": "https://so.eastmoney.com/",
+            },
+        )
+        response.raise_for_status()
+        payload = _strip_jsonp(response.text)
+    except requests.RequestException as exc:
+        raise RealtimeNewsUpstreamError(f"Eastmoney search request failed: {_request_failure_reason(exc)}") from exc
+    except ValueError as exc:
+        raise RealtimeNewsUpstreamError("Eastmoney search returned invalid JSON") from exc
+    return normalize_em_search(payload, platform, limit=limit)
+
+
+def _strip_jsonp(text: str) -> Any:
+    """剥掉 JSONP 外壳 ``cb({...})`` 取出 JSON；找不到括号时按 JSON 解析失败处理。"""
+    start = text.find("(")
+    end = text.rfind(")")
+    if start < 0 or end <= start:
+        raise ValueError("not a JSONP payload")
+    return json.loads(text[start + 1:end])
+
+
+def normalize_cls_search(
+    payload: Any, platform: RealtimeNewsPlatform, *, limit: int, type_: str, tag: str
+) -> List[RealtimeNewsEntry]:
+    """财联社全文搜索 ``data.<type>.data`` → 条目。time 是 epoch 秒；descr 含 <em> 高亮由清洗剥掉。"""
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+        raise RealtimeNewsUpstreamError("invalid Cls search response")
+    section = payload["data"].get(type_)
+    rows = section.get("data") if isinstance(section, dict) else None
+    if not isinstance(rows, list):
+        return []
+    entries: List[RealtimeNewsEntry] = []
+    for row in rows[:max(0, limit)]:
+        if not isinstance(row, dict):
+            continue
+        # 搜索结果把命中关键词用 <em> 高亮；先剥掉这对标签再清洗，避免通用「标签→空格」
+        # 规则在中文正文里留下零散空格（如「公司拟 回购 股份」）。
+        body = _clean_text(_EM_HIGHLIGHT_PATTERN.sub("", str(row.get("descr") or row.get("brief") or "")))
+        title = _clean_text(row.get("title"))
+        if title:
+            prefix = f"【{title}】"
+            if body.startswith(prefix):
+                body = _clean_text(body[len(prefix):])
+        else:
+            title, remainder = _split_bracket_title(body)
+            if title:
+                body = remainder
+            else:
+                title = _fallback_title(body)
+        if not title:
+            continue
+        article_id = _clean_text(row.get("id"))
+        entries.append(RealtimeNewsEntry(
+            platform=platform.key,
+            platform_label=platform.label,
+            title=title,
+            summary=body if body != title else "",
+            url=f"{_CLS_BASE_URL}/detail/{article_id}" if article_id else "",
+            published_at=_parse_epoch_seconds(row.get("time") or row.get("ctime")),
+            tag=tag,
+        ))
+    return entries
+
+
+def _fetch_cls_search(
+    keyword: str, platform: RealtimeNewsPlatform, *, type_: str, tag: str, limit: int, timeout: float
+) -> List[RealtimeNewsEntry]:
+    """财联社全文搜索。sign 只覆盖 app/os/sv 公共参数（在 query），keyword/type 走 POST body。"""
+    query = dict(_CLS_COMMON_PARAMS)
+    query["sign"] = _cls_sign(query)
+    body = {"type": type_, "keyword": keyword, "rn": max(1, min(limit, _CLS_SEARCH_PAGE_SIZE)), "page": 0}
+    body.update(_CLS_COMMON_PARAMS)
+    try:
+        response = requests.post(
+            f"{_CLS_BASE_URL}{_CLS_SEARCH_PATH}",
+            params=query,
+            json=body,
+            timeout=timeout,
+            headers={
+                "User-Agent": _DIRECT_USER_AGENT,
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "Referer": f"{_CLS_BASE_URL}/searchPage",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        raise RealtimeNewsUpstreamError(f"Cls search request failed: {_request_failure_reason(exc)}") from exc
+    except ValueError as exc:
+        raise RealtimeNewsUpstreamError("Cls search returned invalid JSON") from exc
+    return normalize_cls_search(payload, platform, limit=limit, type_=type_, tag=tag)
+
+
+def _fetch_cls_combined(keyword: str, platform: RealtimeNewsPlatform, *, limit: int, timeout: float) -> List[RealtimeNewsEntry]:
+    """财联社关键词搜索 = 电报快讯（telegram）+ 深度文章（depth，tag=深度）。"""
+    return _combine_search_sources(
+        [
+            lambda: _fetch_cls_search(keyword, platform, type_="telegram", tag="", limit=limit, timeout=timeout),
+            lambda: _fetch_cls_search(keyword, platform, type_="depth", tag=TAG_DEPTH, limit=limit, timeout=timeout),
+        ],
+        limit=limit,
+    )
+
+
+# 关键词搜索 provider 注册表：平台 key → 拉取函数。市场级聚合平台（hot）单独处理。
+_SEARCH_FETCHERS: Dict[str, Callable[..., List[RealtimeNewsEntry]]] = {
+    "eastmoney": _fetch_em_search,
+    "cls": _fetch_cls_combined,
+}
 
 
 @dataclass
@@ -713,6 +1139,7 @@ class RealtimeNewsService:
                     "provider": item.provider,
                     "available": item.available,
                     "has_published_at": item.has_published_at,
+                    "supports_search": item.supports_search,
                 }
                 for item in PLATFORMS
             ],
@@ -750,6 +1177,47 @@ class RealtimeNewsService:
             "fetched_at": datetime.now(SHANGHAI_TZ).isoformat(timespec="seconds"),
         }
 
+    def list_search_news(
+        self, *, platform: str, q: str, page: int = 1, page_size: int = 20
+    ) -> Dict[str, Any]:
+        """按任意关键词全文搜索某平台的新闻。关键词为空在此处报 400。
+
+        不支持搜索的平台返回 available=False + 空列表（前端展示空态），与市场级
+        占位平台的约定一致；聚合（hot）并发拉所有支持搜索的平台，单源失败不影响整体。
+        """
+        key = (platform or AGGREGATE_PLATFORM_KEY).strip().lower()
+        target = PLATFORM_BY_KEY.get(key)
+        if target is None:
+            raise RealtimeNewsServiceError(f"unknown platform: {platform}")
+        keyword = _clean_text(q)
+        if not keyword:
+            raise RealtimeNewsServiceError("search keyword must not be empty")
+        page = max(1, int(page))
+        page_size = max(1, min(int(page_size), 100))
+
+        failed: List[str] = []
+        if not target.supports_search:
+            entries: List[RealtimeNewsEntry] = []
+        elif target.provider == PROVIDER_AGGREGATE:
+            entries, failed = self._aggregate_search_entries(keyword)
+        else:
+            entries = self._search_entries_for(target, keyword)
+
+        start = (page - 1) * page_size
+        return {
+            "platform": target.key,
+            "platform_label": target.label,
+            "available": target.supports_search,
+            "has_published_at": True,
+            "items": [_entry_to_dict(entry) for entry in entries[start:start + page_size]],
+            "total": len(entries),
+            "page": page,
+            "page_size": page_size,
+            "failed_platforms": failed,
+            "fetched_at": datetime.now(SHANGHAI_TZ).isoformat(timespec="seconds"),
+            "query": keyword,
+        }
+
     def _aggregate_entries(self) -> Tuple[List[RealtimeNewsEntry], List[str]]:
         """并发拉取所有可用且带发布时间的平台，单源失败不影响整体。"""
         sources = [
@@ -769,36 +1237,136 @@ class RealtimeNewsService:
                     failed.append(item.key)
                     logger.warning("Realtime news aggregate source failed platform=%s: %s", item.key, exc)
 
-        # 先按时间倒序再去重，保证同一条消息保留最新的那个平台版本
-        merged.sort(key=lambda item: item.published_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-        seen: set = set()
-        deduped: List[RealtimeNewsEntry] = []
-        for entry in merged:
-            # 同一条消息常被多个平台同时发，且部分平台（如新浪）不给 url，
-            # 所以按标题归一化去重，url 只作兜底。
-            marker = _dedupe_key(entry.title) or entry.url
-            if marker in seen:
-                continue
-            seen.add(marker)
-            deduped.append(entry)
-        return deduped, failed
+        # 先按时间倒序再按标题去重（同一条消息常被多个平台同时发，且部分平台不给 url）
+        return _merge_sort_dedupe(merged), failed
+
+    def fetch_window_entries(
+        self, *, since: datetime, until: datetime, budget_sec: float
+    ) -> Tuple[List[RealtimeNewsEntry], List[str]]:
+        """把 ``[since, until]`` 窗口内的快讯尽量拉全，供消息面汇总直接取数。
+
+        与页面取数（``_aggregate_entries``）三处刻意不同：
+
+        1. **能翻页的两家深翻**（``_WINDOW_FETCH_SPECS``），翻到越过 ``since`` 即止；
+           其余平台没有历史翻页，单轮能给多少算多少。
+        2. **不走 TTL 缓存**：参数与页面的 50 条快照不同，且汇总要的是「此刻最全」，
+           缓存进去还会在常驻进程里压着上千条。
+        3. ``budget_sec`` 是**整轮总预算**，按平台均摊给各自的翻页预算；超时的平台
+           只记入 failed，已拿到的结果照用（与页面同一套 fail-open）。
+        """
+        sources = [
+            item for item in PLATFORMS
+            if item.available and item.provider != PROVIDER_AGGREGATE and item.has_published_at
+        ]
+        if not sources:  # pragma: no cover - 注册表恒非空
+            return [], []
+
+        budget = max(1.0, float(budget_sec))
+        merged: List[RealtimeNewsEntry] = []
+        failed: List[str] = []
+        with ThreadPoolExecutor(max_workers=max(1, len(sources))) as pool:
+            futures = {
+                pool.submit(self._window_entries_for, item, since, budget): item
+                for item in sources
+            }
+            for future, item in futures.items():
+                try:
+                    # +2s：给线程调度与收尾留一点余量，真正的 deadline 在各 provider 内部
+                    merged.extend(future.result(timeout=budget + 2.0))
+                except Exception as exc:
+                    failed.append(item.key)
+                    logger.warning("Realtime news window fetch failed platform=%s: %s", item.key, exc)
+
+        in_window = [
+            entry for entry in merged
+            if entry.published_at is not None and since <= entry.published_at <= until
+        ]
+        return _merge_sort_dedupe(in_window), failed
+
+    def _window_entries_for(
+        self, platform: RealtimeNewsPlatform, since: datetime, budget: float
+    ) -> List[RealtimeNewsEntry]:
+        """单个平台的窗口回看取数。深翻两家按 spec 放宽上限，其余沿用单轮语义。"""
+        spec = _WINDOW_FETCH_SPECS.get(platform.key)
+        if spec is None:
+            # 无历史翻页的平台：单轮预算没必要占满整轮，沿用页面的单请求超时语义
+            timeout = max(1.0, min(float(self.config.realtime_news_fetch_timeout_sec), 30.0))
+            return self._fetch_single_shot(platform, limit=_WINDOW_SINGLE_SHOT_ITEMS, timeout=timeout)
+
+        limit = int(spec["max_items"])
+        max_pages = int(spec["max_pages"])
+        if platform.provider == PROVIDER_XUEQIU:
+            return _fetch_xueqiu(
+                platform, limit=limit, timeout=budget, max_pages=max_pages, stop_before=since
+            )
+        if platform.provider == PROVIDER_YICAI:
+            return _fetch_yicai(
+                platform, limit=limit, timeout=budget, max_pages=max_pages, stop_before=since
+            )
+        # spec 里登记了却没有对应 provider 分支：当配置错误处理，不静默退化成空
+        raise RealtimeNewsServiceError(f"window fetch spec has no provider: {platform.key}")
+
+    def _fetch_single_shot(
+        self, platform: RealtimeNewsPlatform, *, limit: int, timeout: float
+    ) -> List[RealtimeNewsEntry]:
+        """不支持历史翻页的平台：按给定条数单轮拉一次。"""
+        if platform.provider == PROVIDER_AKSHARE:
+            return _fetch_akshare(platform, limit=limit, timeout=timeout)
+        if platform.provider == PROVIDER_NEWSNOW:
+            return _fetch_newsnow(
+                platform, limit=limit, timeout=timeout, base_url=self.config.newsnow_base_url
+            )
+        if platform.provider == PROVIDER_CLS:
+            return _fetch_cls(platform, limit=limit, timeout=timeout)
+        raise RealtimeNewsServiceError(f"platform has no upstream: {platform.key}")
+
+    def _aggregate_search_entries(self, keyword: str) -> Tuple[List[RealtimeNewsEntry], List[str]]:
+        """并发拉取所有支持搜索的平台（东财/财联社），单源失败不影响整体。"""
+        sources = [
+            item for item in PLATFORMS
+            if item.supports_search and item.provider != PROVIDER_AGGREGATE
+        ]
+        merged: List[RealtimeNewsEntry] = []
+        failed: List[str] = []
+        budget = max(1.0, min(float(self.config.realtime_news_fetch_timeout_sec), 30.0)) + 4.0
+        with ThreadPoolExecutor(max_workers=max(1, len(sources))) as pool:
+            futures = {pool.submit(self._search_entries_for, item, keyword): item for item in sources}
+            for future, item in futures.items():
+                try:
+                    merged.extend(future.result(timeout=budget))
+                except Exception as exc:
+                    failed.append(item.key)
+                    logger.warning("Realtime search source failed platform=%s: %s", item.key, exc)
+        return _merge_sort_dedupe(merged), failed
 
     def _entries_for(self, platform: RealtimeNewsPlatform) -> List[RealtimeNewsEntry]:
+        return self._cached_entries(platform.key, lambda: self._fetch(platform))
+
+    def _search_entries_for(self, platform: RealtimeNewsPlatform, keyword: str) -> List[RealtimeNewsEntry]:
+        # 搜索缓存键独立于市场级（search: 前缀 + 关键词），不与 platform.key 冲突
+        return self._cached_entries(
+            f"search:{platform.key}:{keyword}", lambda: self._fetch_search(platform, keyword)
+        )
+
+    def _cached_entries(
+        self, cache_key: str, fetch: Callable[[], List[RealtimeNewsEntry]]
+    ) -> List[RealtimeNewsEntry]:
+        """带双检锁的进程内短 TTL 缓存。市场级与个股维度共用，只按 cache_key 区分。"""
         ttl = max(0.0, float(self.config.realtime_news_cache_ttl_sec))
-        cached = self._read_cache(platform.key)
+        cached = self._read_cache(cache_key)
         if cached is not None:
             return cached
 
         with self._cache_lock:
-            lock = self._fetch_locks.setdefault(platform.key, threading.Lock())
+            lock = self._fetch_locks.setdefault(cache_key, threading.Lock())
         with lock:
-            # 双检：并发请求同一平台时，后到的直接复用前一个刚写入的缓存
-            cached = self._read_cache(platform.key)
+            # 双检：并发请求同一键时，后到的直接复用前一个刚写入的缓存
+            cached = self._read_cache(cache_key)
             if cached is not None:
                 return cached
-            entries = self._fetch(platform)
+            entries = fetch()
             with self._cache_lock:
-                self._cache[platform.key] = _CacheEntry(entries=entries, expires_at=time.monotonic() + ttl)
+                self._cache[cache_key] = _CacheEntry(entries=entries, expires_at=time.monotonic() + ttl)
             return entries
 
     def _read_cache(self, key: str) -> Optional[List[RealtimeNewsEntry]]:
@@ -811,20 +1379,21 @@ class RealtimeNewsService:
     def _fetch(self, platform: RealtimeNewsPlatform) -> List[RealtimeNewsEntry]:
         limit = max(1, int(self.config.realtime_news_max_items_per_platform))
         timeout = max(1.0, min(float(self.config.realtime_news_fetch_timeout_sec), 30.0))
-        if platform.provider == PROVIDER_AKSHARE:
-            return _fetch_akshare(platform, limit=limit, timeout=timeout)
-        if platform.provider == PROVIDER_NEWSNOW:
-            return _fetch_newsnow(
-                platform,
-                limit=limit,
-                timeout=timeout,
-                base_url=self.config.newsnow_base_url,
-            )
+        # 游标翻页的两家在页面上用默认页数上限；其余平台与窗口回看共用同一套单轮分派
         if platform.provider == PROVIDER_XUEQIU:
             return _fetch_xueqiu(platform, limit=limit, timeout=timeout)
         if platform.provider == PROVIDER_YICAI:
             return _fetch_yicai(platform, limit=limit, timeout=timeout)
-        raise RealtimeNewsServiceError(f"platform has no upstream: {platform.key}")
+        return self._fetch_single_shot(platform, limit=limit, timeout=timeout)
+
+    def _fetch_search(self, platform: RealtimeNewsPlatform, keyword: str) -> List[RealtimeNewsEntry]:
+        limit = max(1, int(self.config.realtime_news_max_items_per_platform))
+        timeout = max(1.0, min(float(self.config.realtime_news_fetch_timeout_sec), 30.0))
+        fetcher = _SEARCH_FETCHERS.get(platform.key)
+        if fetcher is None:
+            # 不支持搜索的平台不应走到这里（list_search_news 已返回空），兜底返回空
+            return []
+        return fetcher(keyword, platform, limit=limit, timeout=timeout)
 
 
 def _entry_to_dict(entry: RealtimeNewsEntry) -> Dict[str, Any]:

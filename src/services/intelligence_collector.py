@@ -67,6 +67,12 @@ def run_collect_once(*, config: Optional[Config] = None, force: bool = False) ->
     results = fetched.get("results") or []
     succeeded = sum(1 for item in results if item.get("ok"))
     saved = sum(int(item.get("saved_count") or 0) for item in results if item.get("ok"))
+    # first_error：整轮全失败时（代理/DNS/上游全挂）调用方要能把原因说给用户，
+    # 而不是只报一个「仍然为空」。错误文案在 IntelligenceService 里已脱敏。
+    first_error = next(
+        (str(item.get("error")) for item in results if not item.get("ok") and item.get("error")),
+        None,
+    )
     return {
         "ok": True,
         "skipped": False,
@@ -74,6 +80,7 @@ def run_collect_once(*, config: Optional[Config] = None, force: bool = False) ->
         "succeeded": succeeded,
         "failed": len(results) - succeeded,
         "saved_count": saved,
+        "first_error": first_error,
         "created_sources": int(ensured.get("created_count") or 0),
         "enabled_sources": int(ensured.get("enabled_count") or 0),
     }

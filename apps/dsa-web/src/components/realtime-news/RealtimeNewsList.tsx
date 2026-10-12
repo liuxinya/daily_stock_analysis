@@ -13,6 +13,12 @@ interface RealtimeNewsListProps {
   platformLabel: string;
   /** 聚合模式下才需要在每条上标出来源平台 */
   showPlatformBadge?: boolean;
+  /** 覆盖「不可用」空态文案（个股模式下该平台不支持个股新闻时用） */
+  unavailableTitle?: string;
+  unavailableDescription?: string;
+  /** 覆盖「没有内容」空态文案（个股模式下该平台没搜到这只股票时用） */
+  emptyTitle?: string;
+  emptyDescription?: string;
 }
 
 /**
@@ -27,6 +33,10 @@ export const RealtimeNewsList: React.FC<RealtimeNewsListProps> = ({
   unavailable = false,
   platformLabel,
   showPlatformBadge = false,
+  unavailableTitle,
+  unavailableDescription,
+  emptyTitle,
+  emptyDescription,
 }) => {
   if (loading) {
     return <Loading label={`正在加载${platformLabel}快讯`} />;
@@ -36,8 +46,10 @@ export const RealtimeNewsList: React.FC<RealtimeNewsListProps> = ({
     return (
       <EmptyState
         icon={<Radio className="h-6 w-6" />}
-        title={`${platformLabel}暂无可用新闻源`}
-        description="该平台目前没有公开的快讯接口，接入后这里会自动显示最新内容。"
+        title={unavailableTitle ?? `${platformLabel}暂无可用新闻源`}
+        description={
+          unavailableDescription ?? '该平台目前没有公开的快讯接口，接入后这里会自动显示最新内容。'
+        }
       />
     );
   }
@@ -46,8 +58,8 @@ export const RealtimeNewsList: React.FC<RealtimeNewsListProps> = ({
     return (
       <EmptyState
         icon={<Radio className="h-6 w-6" />}
-        title="暂时没有拉到快讯"
-        description="上游可能刚好没有新内容，稍后再刷新试试。"
+        title={emptyTitle ?? '暂时没有拉到快讯'}
+        description={emptyDescription ?? '上游可能刚好没有新内容，稍后再刷新试试。'}
       />
     );
   }

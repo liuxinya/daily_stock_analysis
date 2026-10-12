@@ -135,8 +135,10 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         response.status_code = 403
         response.url = source_url
         response.headers = {}
+        # requests 真实的 raise_for_status 会把 response 挂到异常上，服务层据此把失败
+        # 归类成 "HTTP 403"；这里照抄，别让 mock 走到比生产更宽松的分支上
         response.raise_for_status.side_effect = requests.HTTPError(
-            f"403 Client Error: Forbidden for url: {source_url}"
+            f"403 Client Error: Forbidden for url: {source_url}", response=response
         )
         response.iter_content.return_value = []
         return response
@@ -146,7 +148,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "name": "market-feed", "url": "https://feeds.example.com/rss.xml",
             "source_type": "rss", "scope_type": "market", "market": "cn",
         })
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_response()):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=self._mock_response()):
             first = self.service.fetch_source(source["id"])
             second = self.service.fetch_source(source["id"])
         self.assertEqual(first["fetched_count"], 2)
@@ -163,18 +165,18 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "name": "secret-feed", "url": secret_url, "scope_type": "market",
         })
 
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_http_error_response(secret_url)):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=self._mock_http_error_response(secret_url)):
             with self.assertRaises(IntelligenceServiceError) as ctx:
                 self.service.fetch_source(source["id"])
 
         message = str(ctx.exception)
-        self.assertEqual(message, "fetch failed: upstream request failed")
+        self.assertEqual(message, "fetch failed: HTTP 403")
         self.assertNotIn(secret_url, message)
         self.assertNotIn("token=", message)
         self.assertNotIn("super-secret", message)
         saved_source = self.service.repo.get_source(source["id"])
         self.assertIsNotNone(saved_source)
-        self.assertEqual(saved_source.last_error, "fetch failed: upstream request failed")
+        self.assertEqual(saved_source.last_error, "fetch failed: HTTP 403")
 
     def test_fetch_newsnow_http_error_does_not_expose_source_query_secret(self) -> None:
         secret_url = "https://newsnow.example.com/api/s?id=cls-hot&token=super-secret"
@@ -186,15 +188,60 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "market": "cn",
         })
 
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_http_error_response(secret_url)):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=self._mock_http_error_response(secret_url)):
             with self.assertRaises(IntelligenceServiceError) as ctx:
                 self.service.fetch_source(source["id"])
 
         message = str(ctx.exception)
-        self.assertEqual(message, "fetch failed: upstream request failed")
+        self.assertEqual(message, "fetch failed: HTTP 403")
         self.assertNotIn(secret_url, message)
         self.assertNotIn("token=", message)
         self.assertNotIn("super-secret", message)
+
+    def test_fetch_bypasses_environment_proxies(self) -> None:
+        """资讯源抓取一律直连。
+
+        环境里只有 ``ALL_PROXY`` 时，``proxies={"http": None, "https": None}`` 这种写法
+        会被 requests 的 merge 规则抹掉，``all_proxy`` 反而生效 —— 没装 PySocks 的机器上
+        全部资讯源会瞬间失败在 ``InvalidSchema: Missing dependencies for SOCKS support``。
+        """
+        from src.services import intelligence_service as module
+
+        module.reset_direct_session()
+        self.addCleanup(module.reset_direct_session)
+        captured = {}
+
+        def fake_send(self_adapter, request, **kwargs):
+            captured["proxies"] = kwargs.get("proxies")
+            raise requests.ConnectionError("stop before the socket")
+
+        with patch.dict(os.environ, {
+            "ALL_PROXY": "socks5h://localhost:1",
+            "all_proxy": "socks5h://localhost:1",
+            "HTTPS_PROXY": "http://localhost:1",
+            "https_proxy": "http://localhost:1",
+        }), patch.object(requests.adapters.HTTPAdapter, "send", fake_send):
+            with self.assertRaises(requests.ConnectionError):
+                module._direct_session_get("https://feeds.example.com/rss.xml", timeout=1)
+
+        self.assertEqual(captured["proxies"], {})
+
+    def test_fetch_failure_reason_names_the_socks_proxy_misconfiguration(self) -> None:
+        """这类环境问题要能从 last_error 直接看出来，而不是一句通用文案。"""
+        from src.services.intelligence_service import _upstream_failure_message
+
+        message = _upstream_failure_message(
+            requests.exceptions.InvalidSchema("Missing dependencies for SOCKS support.")
+        )
+        self.assertEqual(message, "fetch failed: SOCKS proxy configured but PySocks is not installed")
+        self.assertEqual(
+            _upstream_failure_message(requests.exceptions.ProxyError("boom")),
+            "fetch failed: proxy error",
+        )
+        self.assertEqual(
+            _upstream_failure_message(requests.exceptions.ReadTimeout("slow")),
+            "fetch failed: timeout",
+        )
 
     def test_private_network_url_is_rejected(self) -> None:
         with self.assertRaises(IntelligenceServiceError):
@@ -215,8 +262,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         bad = self.service.create_source({"name": "bad-feed", "url": "https://bad.example.com/rss.xml", "scope_type": "market"})
 
         def fake_get(url, **kwargs):
-            self.assertNotIn("trust_env", kwargs)
-            self.assertEqual(kwargs.get("proxies"), {"http": None, "https": None})
+            self.assertNotIn("proxies", kwargs)
             if "bad" in url:
                 raise RuntimeError("network token=secret should not leak")
             return self._mock_response()
@@ -224,7 +270,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         # validation has dedicated coverage below; keeping it out of this test also
         # avoids coupling the aggregation contract to process-global DNS patching.
         with patch.object(self.service, "_validate_url"), patch(
-            "src.services.intelligence_service.requests.get",
+            "src.services.intelligence_service._direct_session_get",
             side_effect=fake_get,
         ):
             result = self.service.fetch_enabled_sources()
@@ -245,7 +291,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
                 "market": "cn",
             })
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=lambda *_args, **_kwargs: self._mock_response()):
+        with patch("src.services.intelligence_service._direct_session_get", side_effect=lambda *_args, **_kwargs: self._mock_response()):
             result = self.service.fetch_enabled_sources()
 
         self.assertEqual(result["source_count"], 150)
@@ -267,7 +313,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         response.raise_for_status.return_value = None
         response.iter_content.return_value = [NO_URL_LINK_FIXTURE]
 
-        with patch("src.services.intelligence_service.requests.get", return_value=response):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=response):
             result = self.service.fetch_source(source["id"])
 
         self.assertEqual(result["fetched_count"], 1)
@@ -288,7 +334,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         response.raise_for_status.return_value = None
         response.iter_content.return_value = [BAD_ITEM_LINK_FIXTURE]
 
-        with patch("src.services.intelligence_service.requests.get", return_value=response):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=response):
             result = self.service.fetch_source(source["id"])
 
         self.assertEqual(result["fetched_count"], 1)
@@ -312,7 +358,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "market": "cn",
         })
 
-        with patch("src.services.intelligence_service.requests.get", return_value=self._mock_json_response()):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=self._mock_json_response()):
             result = self.service.fetch_source(source["id"])
 
         self.assertEqual(result["fetched_count"], 2)
@@ -344,7 +390,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
     def test_refresh_auto_sources_skips_when_disabled(self) -> None:
         self.service.config.news_intel_auto_fetch_enabled = False
 
-        with patch("src.services.intelligence_service.requests.get") as mock_get:
+        with patch("src.services.intelligence_service._direct_session_get") as mock_get:
             result = self.service.refresh_auto_sources(force=True)
 
         self.assertTrue(result["skipped"])
@@ -355,7 +401,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         self.service.config.news_intel_auto_fetch_enabled = True
         explicit_config = replace(self.service.config, news_intel_auto_fetch_enabled=False)
 
-        with patch("src.services.intelligence_service.requests.get") as mock_get:
+        with patch("src.services.intelligence_service._direct_session_get") as mock_get:
             service = IntelligenceService(config=explicit_config)
             result = service.refresh_auto_sources(force=True)
 
@@ -371,7 +417,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
                 return self._mock_json_response(source_url=url)
             return self._mock_response(source_url=url)
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=fake_get):
+        with patch("src.services.intelligence_service._direct_session_get", side_effect=fake_get):
             result = self.service.refresh_auto_sources(force=True)
 
         self.assertTrue(result["ok"])
@@ -392,7 +438,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
                 return self._mock_json_response(source_url=url)
             return self._mock_response(source_url=url)
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=fake_get):
+        with patch("src.services.intelligence_service._direct_session_get", side_effect=fake_get):
             result = self.service.refresh_auto_sources(force=True)
 
         self.assertEqual(result["bootstrap"]["created_count"], 0)
@@ -407,9 +453,9 @@ class IntelligenceServiceTestCase(unittest.TestCase):
                 return self._mock_json_response(source_url=url)
             return self._mock_response(source_url=url)
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=fake_get):
+        with patch("src.services.intelligence_service._direct_session_get", side_effect=fake_get):
             first = self.service.refresh_auto_sources(force=True)
-        with patch("src.services.intelligence_service.requests.get") as mock_get:
+        with patch("src.services.intelligence_service._direct_session_get") as mock_get:
             second = self.service.refresh_auto_sources()
 
         self.assertTrue(first["ok"])
@@ -498,7 +544,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "market": "cn",
         })
         response = self._mock_response(source_url="https://feeds.example.com/shared.xml")
-        with patch("src.services.intelligence_service.requests.get", return_value=response):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=response):
             market_result = self.service.fetch_source(market["id"])
             symbol_result = self.service.fetch_source(symbol["id"])
 
@@ -517,7 +563,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "scope_type": "market",
         })
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=[
+        with patch("src.services.intelligence_service._direct_session_get", side_effect=[
             self._mock_response_with_redirects(source_url="https://feeds.example.com/rss.xml", next_url="http://localhost/evil.xml"),
             self._mock_response(source_url="http://localhost/evil.xml"),
         ]):
@@ -531,7 +577,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
             "scope_type": "market",
         })
 
-        with patch("src.services.intelligence_service.requests.get", side_effect=[
+        with patch("src.services.intelligence_service._direct_session_get", side_effect=[
             self._mock_response_with_redirects(source_url="https://feeds.example.com/rss.xml", next_url="/next.xml"),
             self._mock_response(source_url="https://feeds.example.com/next.xml"),
         ]):
@@ -554,7 +600,7 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         large_response.raise_for_status.return_value = None
         large_response.iter_content.return_value = [b"x" * (2 * 1024 * 1024 + 1)]
 
-        with patch("src.services.intelligence_service.requests.get", return_value=large_response):
+        with patch("src.services.intelligence_service._direct_session_get", return_value=large_response):
             with self.assertRaises(IntelligenceServiceError):
                 self.service.fetch_source(source["id"])
 

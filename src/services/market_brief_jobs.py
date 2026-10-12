@@ -26,6 +26,7 @@ MAX_WORKERS = 2
 
 PHASE_LABELS = {
     "queued": "排队中",
+    "fetching": "拉取新闻",
     "reading": "读取资讯",
     "analyzing": "分析消息面",
     "finalizing": "汇总校验",
@@ -63,6 +64,9 @@ class BriefJob:
             progress = min(0.99, 0.05 + 0.90 * (self.current_chunk / self.total_chunks))
         elif self.phase == "reading":
             progress = 0.05
+        elif self.phase == "fetching":
+            # 直拉快讯要并发打一轮上游（预算 30 秒），没有这一档进度条会一直停在 0%
+            progress = 0.02
         else:
             progress = 0.0
         return {
@@ -157,9 +161,10 @@ class MarketBriefJobManager:
             self._update(job_id, **fields)
 
         try:
-            self._update(job_id, status="running", phase="reading", message="正在读取窗口内资讯")
+            self._update(job_id, status="running", phase="fetching", message="正在拉取各平台窗口内的快讯")
             window = service.current_window()
-            items, _ = service.ensure_items(window)
+            # 取数阶段自己会上报 fetching / reading，这里只先把 job 置成 running
+            items = service.load_items_or_raise(window, progress=on_progress)
             self._update(job_id, total_items=len(items))
             payload = service.analyzer.analyze(
                 window=window, items=items, force=force, progress=on_progress,
