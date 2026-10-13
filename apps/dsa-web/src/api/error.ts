@@ -11,6 +11,7 @@ export type ApiErrorCategory =
   | 'upstream_llm_400'
   | 'upstream_timeout'
   | 'upstream_network'
+  | 'upstream_risk_control'
   | 'local_connection_failed'
   | 'http_error'
   | 'unknown';
@@ -430,6 +431,16 @@ export function parseApiError(error: unknown): ParsedApiError {
       rawMessage,
       status,
       category: 'upstream_timeout',
+    });
+  }
+
+  if (errorCode === 'upstream_risk_control' || includesAny(matchText, ['upstream_risk_control'])) {
+    return createParsedApiError({
+      title: '上游触发风控限流',
+      message: '数据来源（百度财经）暂时触发了风控限流，与本地网络、代理或 DNS 无关，请稍后重试。',
+      rawMessage,
+      status,
+      category: 'upstream_risk_control',
     });
   }
 

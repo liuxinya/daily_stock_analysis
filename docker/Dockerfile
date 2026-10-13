@@ -50,6 +50,15 @@ COPY requirements.txt .
 # 安装 Python 依赖
 RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
+# Playwright + Chromium：供「股票查询」百度财经代理在服务器端自签 acs-token。
+# 浏览器装到共享目录 /opt/ms-playwright，非 root 的 dsa 用户运行时只读该目录即可（a+rX）。
+# 桌面端不走这条链路（Electron 自带 Chromium 签名），故仅服务器镜像安装 Chromium。
+# 放在 pip 安装之后、复制应用代码之前，requirements 不变时整层可命中构建缓存。
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN python -m playwright install --with-deps chromium && \
+    chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH" && \
+    rm -rf /var/lib/apt/lists/*
+
 # 复制应用代码
 COPY *.py ./
 COPY api/ ./api/

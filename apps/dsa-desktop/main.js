@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 const net = require('net');
 const http = require('http');
@@ -18,6 +19,11 @@ let electronAutoUpdater = undefined;
 let electronAutoUpdaterConfigured = false;
 let electronUpdateCheckInFlight = false;
 let desktopBackendOrigin = '';
+// 百度财经 acs-token 签名器：桌面端用 Electron 内置 Chromium 周期性抓 token 推给后端。
+let desktopBackendTokenSecret = '';
+let baiduTokenMinterTimer = null;
+let baiduTokenMinterWindow = null;
+let baiduTokenMinterInFlight = false;
 
 function resolveWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#08080c' : '#f4f7fb';
@@ -37,6 +43,22 @@ const DESKTOP_BACKEND_DEFAULT_HOST = '127.0.0.1';
 const DESKTOP_SHARE_IMAGE_WIDTH = 1080;
 const DESKTOP_SHARE_IMAGE_INITIAL_HEIGHT = 720;
 const DESKTOP_SHARE_IMAGE_MAX_HEIGHT = 20000;
+// 百度财经 token 签名器配置。token 寿命约 2 分钟，刷新节奏略小于寿命。
+const BAIDU_TOKEN_MINT_PAGE_URL = 'https://finance.baidu.com/stock/ab-601058';
+const BAIDU_TOKEN_VAPI_MARKER = '/vapi/';
+const BAIDU_TOKEN_HEADER = 'acs-token';
+const BAIDU_TOKEN_PUSH_PATH = '/api/v1/baidu-finance/_token';
+const BAIDU_TOKEN_PUSH_SECRET_HEADER = 'x-dsa-token-secret';
+const BAIDU_TOKEN_MINT_INTERVAL_MS = 60000;
+const BAIDU_TOKEN_MINT_TIMEOUT_MS = 20000;
+// 推入后端时声明的有效期：大于刷新间隔、略小于 token 实测硬过期（~179s），
+// 这样签名器若意外停摆，缓存里的 token 也会在真正失效前被后端判定过期并降级。
+const BAIDU_TOKEN_PUSH_TTL_SECONDS = 150;
+const BAIDU_TOKEN_MINTER_PARTITION = 'baidu-finance-token-minter';
+// 自带 Chromium 默认 UA 暴露 Electron，统一成普通桌面 Chrome UA 降低识别面。
+const BAIDU_TOKEN_MINTER_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const PUBLIC_BIND_HOSTS = Object.freeze(new Set(['0.0.0.0', '::', '[::]', '*']));
 const MAC_DESKTOP_CLI_PATH_ENTRIES = Object.freeze([
   '/opt/homebrew/bin',
@@ -862,6 +884,10 @@ function buildBackendArgs({ host, port }) {
   ];
 }
 
+function generateTokenPushSecret() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
 function buildBackendEnvironment({
   envFile,
   dbPath,
@@ -875,6 +901,9 @@ function buildBackendEnvironment({
     normalizeBackendHost(host) || resolveBackendBindHost({ envFile, sourceEnv }),
     DESKTOP_BACKEND_DEFAULT_HOST
   );
+  const existingPushSecret = typeof sourceEnv.BAIDU_FINANCE_TOKEN_PUSH_SECRET === 'string'
+    ? sourceEnv.BAIDU_FINANCE_TOKEN_PUSH_SECRET.trim()
+    : '';
   const env = {
     ...sourceEnv,
     DSA_DESKTOP_MODE: 'true',
@@ -888,6 +917,8 @@ function buildBackendEnvironment({
     BOT_ENABLED: 'false',
     DINGTALK_STREAM_ENABLED: 'false',
     FEISHU_STREAM_ENABLED: 'false',
+    // 桌面端自动生成推送密钥：仅本机 Electron 签名器与本地后端共享，不落盘到 .env。
+    BAIDU_FINANCE_TOKEN_PUSH_SECRET: existingPushSecret || generateTokenPushSecret(),
   };
 
   if (Number.isInteger(selectedPort) && selectedPort >= 1 && selectedPort <= 65535) {
@@ -1176,6 +1207,8 @@ function startBackend({ port, envFile, dbPath, logDir, host = null }) {
   );
 
   const env = buildBackendEnvironment({ envFile, dbPath, logDir, port, host: bindHost });
+  // 记录本次后端进程使用的 token 推送密钥，供 Electron 签名器带上同一密钥推入。
+  desktopBackendTokenSecret = env.BAIDU_FINANCE_TOKEN_PUSH_SECRET || '';
 
   const args = buildBackendArgs({ host: bindHost, port });
   let launchMode = '';
@@ -1452,6 +1485,251 @@ async function renderDesktopShareImage(
       renderWindow.destroy();
     }
   }
+}
+
+function extractAcsTokenFromHeaders(headers) {
+  if (!headers || typeof headers !== 'object') {
+    return null;
+  }
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === BAIDU_TOKEN_HEADER) {
+      const value = headers[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+  return null;
+}
+
+function mintBaiduFinanceToken({
+  BrowserWindowClass = BrowserWindow,
+  pageUrl = BAIDU_TOKEN_MINT_PAGE_URL,
+  timeoutMs = BAIDU_TOKEN_MINT_TIMEOUT_MS,
+} = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let mintWindow = null;
+    let timer = null;
+
+    const finish = (token) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      try {
+        if (mintWindow && !mintWindow.isDestroyed()) {
+          mintWindow.destroy();
+        }
+      } catch (_error) {
+        // 窗口已被销毁时忽略。
+      }
+      if (baiduTokenMinterWindow === mintWindow) {
+        baiduTokenMinterWindow = null;
+      }
+      resolve(token || null);
+    };
+
+    try {
+      mintWindow = new BrowserWindowClass({
+        show: false,
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          sandbox: true,
+          partition: BAIDU_TOKEN_MINTER_PARTITION,
+          backgroundThrottling: false,
+        },
+      });
+      baiduTokenMinterWindow = mintWindow;
+      const { webContents } = mintWindow;
+      if (webContents && typeof webContents.setWindowOpenHandler === 'function') {
+        webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      }
+      if (webContents && typeof webContents.setUserAgent === 'function') {
+        webContents.setUserAgent(BAIDU_TOKEN_MINTER_USER_AGENT);
+      }
+      const session = webContents && webContents.session;
+      const webRequest = session && session.webRequest;
+      if (!webRequest || typeof webRequest.onBeforeSendHeaders !== 'function') {
+        finish(null);
+        return;
+      }
+      webRequest.onBeforeSendHeaders((details, callback) => {
+        let token = null;
+        if (details && typeof details.url === 'string' && details.url.includes(BAIDU_TOKEN_VAPI_MARKER)) {
+          token = extractAcsTokenFromHeaders(details.requestHeaders);
+        }
+        if (typeof callback === 'function') {
+          callback({ requestHeaders: (details && details.requestHeaders) || {} });
+        }
+        if (token) {
+          finish(token);
+        }
+      });
+
+      timer = setTimeout(() => finish(null), timeoutMs);
+      Promise.resolve(mintWindow.loadURL(pageUrl)).catch(() => {
+        // 导航中途报错（子资源被风控/中断）属正常，交给抓取回调或超时兜底。
+      });
+    } catch (error) {
+      logLine(`[baidu-token] mint window failed: ${error && error.message ? error.message : error}`);
+      finish(null);
+    }
+  });
+}
+
+function pushBaiduFinanceToken(
+  token,
+  {
+    host = DESKTOP_BACKEND_DEFAULT_HOST,
+    port,
+    secret,
+    ttlSeconds = BAIDU_TOKEN_PUSH_TTL_SECONDS,
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+    request = http.request,
+  } = {}
+) {
+  return new Promise((resolve, reject) => {
+    if (!token) {
+      reject(new Error('Cannot push an empty Baidu token'));
+      return;
+    }
+    if (!secret) {
+      reject(new Error('Missing Baidu token push secret'));
+      return;
+    }
+
+    const targetUrl = buildBackendUrl(host, port, BAIDU_TOKEN_PUSH_PATH);
+    const payload = Buffer.from(JSON.stringify({ token, ttl: ttlSeconds }), 'utf-8');
+    let settled = false;
+
+    const finishWithError = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (!req.destroyed) {
+        req.destroy();
+      }
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    const finishWithResult = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(value);
+    };
+
+    const req = request(
+      targetUrl,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': payload.length,
+          [BAIDU_TOKEN_PUSH_SECRET_HEADER]: secret,
+        },
+      },
+      (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+        });
+        response.on('end', () => {
+          if (settled) {
+            return;
+          }
+          const status = response.statusCode || 0;
+          if (status >= 200 && status < 300) {
+            finishWithResult(true);
+          } else {
+            const body = Buffer.concat(chunks).toString('utf-8').slice(0, 200);
+            finishWithError(new Error(`Token push responded with status ${status}: ${body}`));
+          }
+        });
+        response.on('error', finishWithError);
+        response.on('aborted', () => finishWithError(new Error('Token push response was aborted.')));
+      }
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Token push timeout after ${timeoutMs}ms`));
+    });
+    req.on('error', finishWithError);
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function refreshBaiduFinanceToken({
+  host,
+  port,
+  secret = desktopBackendTokenSecret,
+  BrowserWindowClass = BrowserWindow,
+  request = http.request,
+} = {}) {
+  if (!secret || !port) {
+    return false;
+  }
+  if (baiduTokenMinterInFlight) {
+    // 上一轮签名尚未结束（抓取 + 推送可能跨越一个刷新周期），跳过本次避免叠加开窗口。
+    return false;
+  }
+  baiduTokenMinterInFlight = true;
+  try {
+    const token = await mintBaiduFinanceToken({ BrowserWindowClass });
+    if (!token) {
+      logLine('[baidu-token] mint produced no acs-token this cycle');
+      return false;
+    }
+    await pushBaiduFinanceToken(token, { host, port, secret, request });
+    logLine('[baidu-token] pushed fresh acs-token to backend');
+    return true;
+  } catch (error) {
+    logLine(`[baidu-token] refresh failed: ${error && error.message ? error.message : error}`);
+    return false;
+  } finally {
+    baiduTokenMinterInFlight = false;
+  }
+}
+
+function startBaiduFinanceTokenMinter({ host, port, secret = desktopBackendTokenSecret } = {}) {
+  stopBaiduFinanceTokenMinter();
+  if (!secret || !port) {
+    logLine('[baidu-token] minter disabled (missing secret or port)');
+    return;
+  }
+  const run = () => {
+    void refreshBaiduFinanceToken({ host, port, secret });
+  };
+  run();
+  baiduTokenMinterTimer = setInterval(run, BAIDU_TOKEN_MINT_INTERVAL_MS);
+  if (baiduTokenMinterTimer && typeof baiduTokenMinterTimer.unref === 'function') {
+    baiduTokenMinterTimer.unref();
+  }
+  logLine(`[baidu-token] minter started (interval=${BAIDU_TOKEN_MINT_INTERVAL_MS}ms)`);
+}
+
+function stopBaiduFinanceTokenMinter() {
+  if (baiduTokenMinterTimer) {
+    clearInterval(baiduTokenMinterTimer);
+    baiduTokenMinterTimer = null;
+  }
+  if (baiduTokenMinterWindow && !baiduTokenMinterWindow.isDestroyed()) {
+    try {
+      baiduTokenMinterWindow.destroy();
+    } catch (_error) {
+      // 窗口已销毁时忽略。
+    }
+  }
+  baiduTokenMinterWindow = null;
 }
 
 function isWindowsNsisInstalledApp() {
@@ -2055,6 +2333,8 @@ async function createWindow() {
       onHealthProgress
     );
     logStartup(`Backend ready in ${healthInfo.elapsedMs}ms (${healthInfo.attempts} probes)`);
+    // 后端就绪后启动百度财经 token 签名器：隐藏窗口周期性抓 acs-token 推给本地后端。
+    startBaiduFinanceTokenMinter({ host: backendConnectHost, port, secret: desktopBackendTokenSecret });
     const mainPageStartedAt = Date.now();
     const mainPageUrl = buildMainPageUrl(port, Date.now(), backendConnectHost);
     await mainWindow.loadURL(mainPageUrl);
@@ -2079,6 +2359,7 @@ app.on('activate', () => {
 });
 
 app.on('window-all-closed', () => {
+  stopBaiduFinanceTokenMinter();
   void stopBackend();
   if (process.platform !== 'darwin') {
     app.quit();
@@ -2086,6 +2367,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  stopBaiduFinanceTokenMinter();
   void stopBackend();
 });
 
@@ -2124,12 +2406,29 @@ module.exports = {
   sanitizeReleaseUrl,
   startBackend,
   stopBackend,
+  extractAcsTokenFromHeaders,
+  mintBaiduFinanceToken,
+  pushBaiduFinanceToken,
+  refreshBaiduFinanceToken,
+  startBaiduFinanceTokenMinter,
+  stopBaiduFinanceTokenMinter,
   __getBackendProcessForTest() {
     return backendProcess;
   },
   __setBackendProcessForTest,
   __setMainWindowForTest(mainWindowRef = null) {
     mainWindow = mainWindowRef;
+  },
+  __getBaiduTokenMinterStateForTest() {
+    return {
+      timerActive: Boolean(baiduTokenMinterTimer),
+      windowActive: Boolean(baiduTokenMinterWindow),
+      inFlight: baiduTokenMinterInFlight,
+      secret: desktopBackendTokenSecret,
+    };
+  },
+  __setDesktopBackendTokenSecretForTest(secret = '') {
+    desktopBackendTokenSecret = secret;
   },
   waitForBackendExit,
 };

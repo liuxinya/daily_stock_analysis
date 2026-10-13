@@ -25,6 +25,8 @@ EXEMPT_PATHS = frozenset({
     "/docs",
     "/redoc",
     "/openapi.json",
+    # 桌面端 Electron 回推 acs-token；端点自带回环地址 + 共享密钥校验，不走会话登录。
+    "/api/v1/baidu-finance/_token",
 })
 
 

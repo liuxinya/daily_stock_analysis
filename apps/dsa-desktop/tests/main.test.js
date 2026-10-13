@@ -1614,3 +1614,152 @@ test('stopBackend uses taskkill on Windows and clears after backend exit', async
   ]);
   assert.equal(mainModule.__getBackendProcessForTest(), null);
 });
+
+// --- 百度财经 acs-token 签名器 ---------------------------------------------
+
+// 伪造隐藏签名窗口：loadURL 时模拟页面发起一次请求并触发 onBeforeSendHeaders。
+function makeMintWindowClass({ requestHeaders, vapi = true, created = [] }) {
+  return class FakeMintWindow {
+    constructor(options) {
+      this.options = options;
+      this._destroyed = false;
+      created.push(this);
+      const wr = { onBeforeSendHeaders: (handler) => { this._handler = handler; } };
+      this.webContents = {
+        setWindowOpenHandler: () => undefined,
+        setUserAgent: () => undefined,
+        session: { webRequest: wr },
+      };
+    }
+
+    isDestroyed() { return this._destroyed; }
+
+    destroy() { this._destroyed = true; }
+
+    loadURL() {
+      if (this._handler) {
+        const url = vapi ? 'https://finance.pae.baidu.com/vapi/v1/fundflow' : 'https://x/other';
+        this._handler({ url, requestHeaders }, () => undefined);
+      }
+      return Promise.resolve();
+    }
+  };
+}
+
+// 伪造 http.request：记录请求并按状态码回放响应。
+function makeFakeHttpRequest({ statusCode = 200, body = '{"ok":true}', captured = {} } = {}) {
+  return function fakeRequest(targetUrl, options, responseCallback) {
+    captured.url = targetUrl;
+    captured.options = options;
+    captured.chunks = [];
+    const req = new EventEmitter();
+    req.destroyed = false;
+    req.setTimeout = () => undefined;
+    req.write = (payload) => { captured.chunks.push(payload); };
+    req.end = () => {
+      process.nextTick(() => {
+        const res = new EventEmitter();
+        res.statusCode = statusCode;
+        responseCallback(res);
+        process.nextTick(() => {
+          res.emit('data', Buffer.from(body));
+          res.emit('end');
+        });
+      });
+    };
+    req.destroy = () => { req.destroyed = true; };
+    return req;
+  };
+}
+
+test('extractAcsTokenFromHeaders is case-insensitive and trims', (t) => {
+  const mainModule = loadMainModule(t);
+  assert.equal(mainModule.extractAcsTokenFromHeaders({ 'Acs-Token': '  TOK  ' }), 'TOK');
+  assert.equal(mainModule.extractAcsTokenFromHeaders({ 'x-other': 'y' }), null);
+  assert.equal(mainModule.extractAcsTokenFromHeaders(null), null);
+});
+
+test('mintBaiduFinanceToken captures acs-token from a /vapi/ request then destroys the window', async (t) => {
+  const mainModule = loadMainModule(t);
+  const created = [];
+  const Cls = makeMintWindowClass({ requestHeaders: { 'acs-token': 'MINTED' }, created });
+  const token = await mainModule.mintBaiduFinanceToken({ BrowserWindowClass: Cls, timeoutMs: 500 });
+  assert.equal(token, 'MINTED');
+  assert.equal(created.length, 1);
+  assert.equal(created[0].isDestroyed(), true);
+});
+
+test('mintBaiduFinanceToken returns null when no /vapi/ request carries a token', async (t) => {
+  const mainModule = loadMainModule(t);
+  const created = [];
+  const Cls = makeMintWindowClass({ requestHeaders: { 'user-agent': 'x' }, vapi: false, created });
+  const token = await mainModule.mintBaiduFinanceToken({ BrowserWindowClass: Cls, timeoutMs: 30 });
+  assert.equal(token, null);
+  assert.equal(created[0].isDestroyed(), true);
+});
+
+test('pushBaiduFinanceToken posts token with the shared-secret header', async (t) => {
+  const mainModule = loadMainModule(t);
+  const captured = {};
+  const request = makeFakeHttpRequest({ statusCode: 200, captured });
+  const ok = await mainModule.pushBaiduFinanceToken('TOK', {
+    host: '127.0.0.1', port: 8750, secret: 's3cret', ttlSeconds: 150, request,
+  });
+  assert.equal(ok, true);
+  assert.equal(captured.options.method, 'POST');
+  assert.equal(captured.options.headers['x-dsa-token-secret'], 's3cret');
+  assert.ok(captured.url.endsWith('/api/v1/baidu-finance/_token'));
+  const sent = JSON.parse(Buffer.concat(captured.chunks).toString('utf-8'));
+  assert.equal(sent.token, 'TOK');
+  assert.equal(sent.ttl, 150);
+});
+
+test('pushBaiduFinanceToken rejects on non-2xx and on missing inputs', async (t) => {
+  const mainModule = loadMainModule(t);
+  const request = makeFakeHttpRequest({ statusCode: 403, body: 'nope' });
+  await assert.rejects(
+    () => mainModule.pushBaiduFinanceToken('TOK', { port: 8750, secret: 's3cret', request }),
+    /status 403/,
+  );
+  await assert.rejects(
+    () => mainModule.pushBaiduFinanceToken('', { port: 8750, secret: 's3cret' }),
+    /empty/i,
+  );
+  await assert.rejects(
+    () => mainModule.pushBaiduFinanceToken('TOK', { port: 8750, secret: '' }),
+    /secret/i,
+  );
+});
+
+test('refreshBaiduFinanceToken mints then pushes; no-ops without secret or port', async (t) => {
+  const mainModule = loadMainModule(t);
+  assert.equal(await mainModule.refreshBaiduFinanceToken({ port: 8750, secret: '' }), false);
+  assert.equal(await mainModule.refreshBaiduFinanceToken({ secret: 's3cret' }), false);
+
+  const captured = {};
+  const Cls = makeMintWindowClass({ requestHeaders: { 'acs-token': 'MINTED' } });
+  const request = makeFakeHttpRequest({ statusCode: 200, captured });
+  const ok = await mainModule.refreshBaiduFinanceToken({
+    host: '127.0.0.1', port: 8750, secret: 's3cret', BrowserWindowClass: Cls, request,
+  });
+  assert.equal(ok, true);
+  const sent = JSON.parse(Buffer.concat(captured.chunks).toString('utf-8'));
+  assert.equal(sent.token, 'MINTED');
+});
+
+test('start/stop minter toggles the interval timer and clears it on stop', (t) => {
+  const mainModule = loadMainModule(t);
+  t.after(() => mainModule.stopBaiduFinanceTokenMinter());
+
+  // 缺密钥 / 端口时不启动定时器。
+  mainModule.startBaiduFinanceTokenMinter({ host: '127.0.0.1', port: 8750, secret: '' });
+  assert.equal(mainModule.__getBaiduTokenMinterStateForTest().timerActive, false);
+
+  mainModule.startBaiduFinanceTokenMinter({ host: '127.0.0.1', port: 8750, secret: 's3cret' });
+  assert.equal(mainModule.__getBaiduTokenMinterStateForTest().timerActive, true);
+
+  mainModule.stopBaiduFinanceTokenMinter();
+  const state = mainModule.__getBaiduTokenMinterStateForTest();
+  assert.equal(state.timerActive, false);
+  assert.equal(state.windowActive, false);
+});

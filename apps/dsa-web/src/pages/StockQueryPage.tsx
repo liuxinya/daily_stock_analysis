@@ -12,7 +12,7 @@ import { ProfileTab } from '../components/stock-query/ProfileTab';
 import { TalksTab } from '../components/stock-query/TalksTab';
 import { KeyValueGrid } from '../components/stock-query/shared';
 import { text, trendClass, withSign } from '../components/stock-query/format';
-import { baiduFinanceApi, parseMarketData } from '../api/baiduFinance';
+import { baiduFinanceApi, isEtfCode, parseMarketData } from '../api/baiduFinance';
 import type { KlineRow } from '../api/baiduFinance';
 import { getParsedApiError } from '../api/error';
 import type { ParsedApiError } from '../api/error';
@@ -44,6 +44,9 @@ const TABS = [
 
 type TabKey = (typeof TABS)[number]['key'];
 
+/** ETF 在百度上游没有公司简况 / 股吧 / 三表 / 评分，这些 tab 对 ETF 隐藏。 */
+const ETF_HIDDEN_TABS = new Set<TabKey>(['profile', 'talks', 'finance', 'analysis']);
+
 const DEFAULT_CODE = '000960';
 
 /** 去掉市场前缀，百度接口要的是裸 6 位代码。 */
@@ -68,6 +71,13 @@ export const StockQueryPage: React.FC = () => {
   const [input, setInput] = useState(() => resolveEntryCode(searchParams.get('code')));
   const [code, setCode] = useState(() => resolveEntryCode(searchParams.get('code')));
   const [activeTab, setActiveTab] = useState<TabKey>('overview');
+
+  // ETF 与股票走不同的上游接口，且 ETF 没有简况/财务等 tab，页面据此分流。
+  const isEtf = useMemo(() => isEtfCode(code), [code]);
+  const visibleTabs = useMemo(
+    () => (isEtf ? TABS.filter((tab) => !ETF_HIDDEN_TABS.has(tab.key)) : TABS),
+    [isEtf],
+  );
 
   const [quote, setQuote] = useState<TabState<StockQuote>>(initialState);
   const [kline, setKline] = useState<TabState<{
@@ -181,25 +191,35 @@ export const StockQueryPage: React.FC = () => {
     if (activeTab === 'fundflow') {
       void load(fundFlow, setFundFlow, () => baiduFinanceApi.fundFlow(code));
     }
-    if (activeTab === 'profile') {
-      void load(company, setCompany, () => baiduFinanceApi.company(code));
-    }
-    if (activeTab === 'talks') {
-      void load(talks, setTalks, () => baiduFinanceApi.talks(code));
-    }
     if (activeTab === 'news') {
       void load(news, setNews, () => baiduFinanceApi.sentiment(code));
     }
-    if (activeTab === 'finance') {
-      void load(finance, setFinance, () => baiduFinanceApi.finance(code));
-      void load(mainOp, setMainOp, () => baiduFinanceApi.mainOperation(code));
-    }
-    if (activeTab === 'analysis') {
-      void load(analysis, setAnalysis, () => baiduFinanceApi.analysis(code));
-      void loadKline();
+    // 以下 tab 仅股票有，ETF 不请求（这些 tab 对 ETF 已隐藏）。
+    if (!isEtf) {
+      if (activeTab === 'profile') {
+        void load(company, setCompany, () => baiduFinanceApi.company(code));
+      }
+      if (activeTab === 'talks') {
+        void load(talks, setTalks, () => baiduFinanceApi.talks(code));
+      }
+      if (activeTab === 'finance') {
+        void load(finance, setFinance, () => baiduFinanceApi.finance(code));
+        void load(mainOp, setMainOp, () => baiduFinanceApi.mainOperation(code));
+      }
+      if (activeTab === 'analysis') {
+        void load(analysis, setAnalysis, () => baiduFinanceApi.analysis(code));
+        void loadKline();
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, code]);
+
+  // 切到 ETF 时若仍停留在 ETF 不支持的 tab（如财务），回落到概览。
+  useEffect(() => {
+    if (isEtf && ETF_HIDDEN_TABS.has(activeTab)) {
+      setActiveTab('overview');
+    }
+  }, [isEtf, activeTab]);
 
   const spread = fundFlow.data?.Result?.content?.fundFlowSpread?.result;
   const newCompany = company.data?.Result?.content?.newCompany as never;
@@ -269,7 +289,7 @@ export const StockQueryPage: React.FC = () => {
       </section>
 
       <div role="tablist" aria-label="股票信息分类" className="mb-4 flex flex-wrap gap-2">
-        {TABS.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.key}
             type="button"

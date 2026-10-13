@@ -1029,6 +1029,14 @@ class Config:
     market_brief_closed_time: str = "09:30"  # 周末/节假日汇总的生成时点
     market_brief_retention_days: int = 30  # 汇总结果保留天数
 
+    # === 股票查询（百度财经代理）acs-token 配置 ===
+    # 百度财经 /vapi/v1/* 接口（资金 / 分析）需要 acs-token 请求头，缺失即 403 风控。
+    # token 由浏览器混淆 JS 生成：桌面端由 Electron 隐藏窗口推入，服务器端由
+    # Playwright + 镜像内 Chromium 自签；两者都不可用时退回不带 token 并如实报错。
+    baidu_finance_token_enabled: bool = True  # 总开关；关掉即退回不带 token（资金 / 分析会显示上游风控）
+    baidu_finance_token_ttl_sec: int = 90  # 单个 token 的进程内缓存时长（秒）；上游寿命约 2 分钟
+    baidu_finance_token_push_secret: str = ""  # Electron 推入 token 的共享密钥；为空则 /_token 端点禁用
+
     # === Agent 模式配置 ===
     agent_backend: str = "auto"
     agent_generation_backend: str = AUTO_AGENT_BACKEND_ID
@@ -1444,6 +1452,7 @@ class Config:
                 'cls.cn',          # 财联社 (实时新闻电报)
                 'xueqiu.com',      # 雪球 (实时新闻)
                 'yicai.com',       # 第一财经 (实时新闻)
+                'baidu.com',       # 百度财经 (股票查询代理 finance.pae.baidu.com)
                 'busiyi.world',    # NewsNow 聚合 (实时新闻 + 资讯源采集)
                 'localhost',
                 '127.0.0.1'
@@ -2061,6 +2070,12 @@ class Config:
                 os.getenv('MARKET_BRIEF_RETENTION_DAYS'), 30,
                 field_name='MARKET_BRIEF_RETENTION_DAYS', minimum=3, maximum=365,
             ),
+            baidu_finance_token_enabled=parse_env_bool(os.getenv('BAIDU_FINANCE_TOKEN_ENABLED'), True),
+            baidu_finance_token_ttl_sec=parse_env_int(
+                os.getenv('BAIDU_FINANCE_TOKEN_TTL_SEC'), 90,
+                field_name='BAIDU_FINANCE_TOKEN_TTL_SEC', minimum=10, maximum=300,
+            ),
+            baidu_finance_token_push_secret=((os.getenv('BAIDU_FINANCE_TOKEN_PUSH_SECRET') or '').strip()),
             cctv_news_analysis_call_timeout_sec=parse_env_int(
                 os.getenv('CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC'),
                 120,

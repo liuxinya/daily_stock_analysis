@@ -84,6 +84,51 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_baidu_finance_token_env_defaults_and_overrides(
+        self, _mock_parse_litellm_yaml, _mock_setup_env
+    ):
+        # 不配置：总开关默认开、TTL 默认 90、推入密钥为空（端点禁用）。
+        with patch.dict(os.environ, {"STOCK_LIST": "600519"}, clear=True):
+            defaults = Config._load_from_env()
+        self.assertTrue(defaults.baidu_finance_token_enabled)
+        self.assertEqual(defaults.baidu_finance_token_ttl_sec, 90)
+        self.assertEqual(defaults.baidu_finance_token_push_secret, "")
+
+        # 配置覆盖：关总开关、自定义 TTL、密钥去除首尾空白。
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "BAIDU_FINANCE_TOKEN_ENABLED": "false",
+                "BAIDU_FINANCE_TOKEN_TTL_SEC": "120",
+                "BAIDU_FINANCE_TOKEN_PUSH_SECRET": "  s3cret  ",
+            },
+            clear=True,
+        ):
+            configured = Config._load_from_env()
+        self.assertFalse(configured.baidu_finance_token_enabled)
+        self.assertEqual(configured.baidu_finance_token_ttl_sec, 120)
+        self.assertEqual(configured.baidu_finance_token_push_secret, "s3cret")
+
+        # TTL 越界按 [10, 300] 夹取。
+        with patch.dict(
+            os.environ,
+            {"STOCK_LIST": "600519", "BAIDU_FINANCE_TOKEN_TTL_SEC": "5"},
+            clear=True,
+        ):
+            clamped_low = Config._load_from_env()
+        self.assertEqual(clamped_low.baidu_finance_token_ttl_sec, 10)
+
+        with patch.dict(
+            os.environ,
+            {"STOCK_LIST": "600519", "BAIDU_FINANCE_TOKEN_TTL_SEC": "999"},
+            clear=True,
+        ):
+            clamped_high = Config._load_from_env()
+        self.assertEqual(clamped_high.baidu_finance_token_ttl_sec, 300)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_market_review_region_accepts_comma_separated_supported_values(
         self, _mock_parse_litellm_yaml, _mock_setup_env
     ):

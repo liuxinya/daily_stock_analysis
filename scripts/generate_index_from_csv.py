@@ -15,6 +15,10 @@ Usage:
     python scripts/generate_index_from_csv.py --source akshare
     python scripts/generate_index_from_csv.py --test       # 测试模式
     python scripts/generate_index_from_csv.py --index-only --test  # 仅合并指数 seed
+    python scripts/generate_index_from_csv.py --etf-only --test     # 仅合并 ETF seed
+
+ETF seed（``stock_index_seeds/etf_registry.csv``）覆盖全部场内 ETF，由
+``scripts/refresh_etf_registry.py`` 从公开行情列表刷新；本脚本只负责确定性合并。
 """
 
 import argparse
@@ -970,6 +974,257 @@ def run_index_only(output_path: Path, *, test: bool = False) -> List[List[Any]]:
     return merged
 
 
+# ---------------------------------------------------------------------------
+# ETF registry seed — build-time manifest merge (mirrors the index registry).
+# ---------------------------------------------------------------------------
+_ETF_REGISTRY_SEED_PATH = Path(__file__).parent / "stock_index_seeds" / "etf_registry.csv"
+_ETF_CANONICAL_RE = re.compile(r"^\d{6}\.(SH|SZ)$")
+# Exchange-traded fund code prefixes per listing venue. Shanghai ETFs start
+# with 5x (50/51/52/53/55/56/58 observed across the full on-exchange universe,
+# e.g. 530xxx 上证系列, 551xxx 科创债), Shenzhen ETFs with 1x (15/16/18). This
+# is a superset of ``data_provider/base.py`` ``ETF_PREFIXES`` (which only needs
+# the quote-routing subset). The listing venue is derived from the prefix, so a
+# seed row whose ``.SH``/``.SZ`` suffix contradicts its code is rejected.
+_ETF_SH_PREFIXES = ("50", "51", "52", "53", "55", "56", "58")
+_ETF_SZ_PREFIXES = ("15", "16", "18")
+# __ETF_BLOCK__
+
+
+def _etf_expected_suffix(code6: str) -> Optional[str]:
+    """Return the listing-venue suffix (``SH``/``SZ``) implied by an ETF code."""
+    if code6.startswith(_ETF_SH_PREFIXES):
+        return "SH"
+    if code6.startswith(_ETF_SZ_PREFIXES):
+        return "SZ"
+    return None
+
+
+def load_etf_registry_seed(seed_path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load the on-exchange ETF-registry seed CSV into raw row dicts.
+
+    Columns: ``canonical_code,name_zh,aliases,popularity``. The seed covers the
+    full set of exchange-traded ETFs and is refreshed by
+    ``scripts/refresh_etf_registry.py``.
+    ``display_code`` is intentionally omitted: an A-share ETF always displays
+    its bare 6-digit code, so it is derived from ``canonical_code`` to avoid a
+    redundant column drifting out of sync. ``aliases`` uses the existing
+    ``|``-separated ``parse_aliases()`` convention; ``popularity`` defaults to
+    ``90`` (below stocks/indices, which sit at ``100``) so an exact code match
+    still wins while a shared name prefix ranks ETFs just under equities.
+    """
+    path = seed_path or _ETF_REGISTRY_SEED_PATH
+    if not path.is_file():
+        raise FileNotFoundError(f"etf registry seed not found: {path}")
+
+    rows: List[Dict[str, Any]] = []
+    seen_canonical: Dict[str, str] = {}
+    with open(path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            canonical = (row.get("canonical_code") or "").strip().upper()
+            name = (row.get("name_zh") or "").strip()
+            if not canonical or not name:
+                raise ValueError(f"etf registry seed row missing required field: {row}")
+
+            aliases = parse_aliases(row)
+            popularity_raw = (row.get("popularity") or "90").strip() or "90"
+            try:
+                popularity = int(popularity_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"etf registry seed popularity must be a plain integer, "
+                    f"got {popularity_raw!r} for canonical {canonical!r}"
+                ) from exc
+            if popularity < 0:
+                raise ValueError(
+                    f"etf registry seed popularity must be non-negative: "
+                    f"{popularity!r} for canonical {canonical!r}"
+                )
+
+            if canonical in seen_canonical:
+                raise ValueError(f"duplicate etf canonical in seed: {canonical!r}")
+            seen_canonical[canonical] = canonical
+
+            rows.append({
+                "canonical_code": canonical,
+                "name_zh": name,
+                "aliases": aliases,
+                "popularity": popularity,
+            })
+    return rows
+# __ETF_BLOCK2__
+
+
+def build_etf_entries_from_seed(seed_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert ETF seed rows into the 10-column index tuple dicts.
+
+    ``displayCode`` is the bare 6-digit code; the listing venue is derived from
+    the code prefix and must agree with the ``.SH``/``.SZ`` canonical suffix.
+    All rows are ``market=CN``, ``assetType=etf``, ``active=True``.
+    """
+    entries: List[Dict[str, Any]] = []
+    for row in seed_rows:
+        canonical = row["canonical_code"]
+        if not _ETF_CANONICAL_RE.match(canonical):
+            raise ValueError(
+                f"etf canonical must match ^\\d{{6}}\\.(SH|SZ)$: {canonical!r}"
+            )
+        code6, suffix = canonical.split(".")
+        expected = _etf_expected_suffix(code6)
+        if expected is None:
+            raise ValueError(f"etf code is not a known ETF prefix: {canonical!r}")
+        if suffix != expected:
+            raise ValueError(
+                f"etf suffix {suffix!r} contradicts code prefix for {canonical!r} "
+                f"(expected .{expected})"
+            )
+        popularity = row.get("popularity", 90)
+        if (
+            isinstance(popularity, bool)
+            or not isinstance(popularity, int)
+            or popularity < 0
+        ):
+            raise ValueError(
+                f"etf popularity must be a non-negative integer: {canonical!r}"
+            )
+        pinyin_full, pinyin_abbr = generate_pinyin(row["name_zh"])
+        entries.append({
+            "canonicalCode": canonical,
+            "displayCode": code6,
+            "nameZh": row["name_zh"],
+            "pinyinFull": pinyin_full,
+            "pinyinAbbr": pinyin_abbr,
+            "aliases": list(row.get("aliases") or []),
+            "market": "CN",
+            "assetType": "etf",
+            "active": True,
+            "popularity": popularity,
+        })
+    return entries
+# __ETF_BLOCK3__
+
+
+def validate_etf_registry(
+    entries: List[Dict[str, Any]],
+    non_etf_rows: Optional[List[List[Any]]] = None,
+) -> None:
+    """Semantic validation for the on-exchange ETF registry (build-time merge).
+
+    Rules:
+      1. canonical matches ``^\\d{6}\\.(SH|SZ)$``; display == the 6-digit code;
+         the ``.SH``/``.SZ`` suffix agrees with the code prefix venue.
+      2. market=CN, assetType=etf, active=True, non-empty name, valid pinyin,
+         non-negative integer popularity, aliases is a list.
+      3. canonical is unique within the set.
+      4. The bare display code must not collide with an existing active
+         stock/index identity in the same payload (ETF and stock code ranges are
+         disjoint by prefix, so this is a defensive guard against typos).
+
+    ``non_etf_rows`` carries the other active compressed tuples from the same
+    payload so rule 4 can detect a collision after normalization.
+    """
+    if not entries:
+        return
+
+    existing_codes: Dict[str, str] = {}
+    for row in non_etf_rows or []:
+        if not isinstance(row, list) or len(row) < 10:
+            continue
+        if row[8] is not True:
+            continue
+        row_canonical = str(row[0] or "").strip()
+        for key in (row[0], row[1]):
+            norm = str(key or "").strip().upper()
+            if norm:
+                existing_codes.setdefault(norm, row_canonical)
+
+    canonical_seen: Dict[str, str] = {}
+    for entry in entries:
+        canonical = str(entry["canonicalCode"] or "").strip()
+        display = str(entry["displayCode"] or "").strip()
+        name = str(entry["nameZh"] or "").strip()
+        market = str(entry["market"] or "").strip()
+        asset_type = str(entry["assetType"] or "").strip()
+        active = entry["active"]
+        popularity = entry["popularity"]
+        aliases = entry.get("aliases")
+        # __ETF_VALIDATE_BODY__
+        if not _ETF_CANONICAL_RE.match(canonical):
+            raise ValueError(
+                f"etf canonical must match ^\\d{{6}}\\.(SH|SZ)$: {canonical!r}"
+            )
+        code6, suffix = canonical.split(".")
+        if display != code6:
+            raise ValueError(
+                f"etf display must equal the 6-digit code: {canonical!r} != {display!r}"
+            )
+        if _etf_expected_suffix(code6) != suffix:
+            raise ValueError(f"etf suffix contradicts code prefix: {canonical!r}")
+        if market != "CN":
+            raise ValueError(f"etf market must be CN: {canonical!r}")
+        if asset_type != "etf":
+            raise ValueError(f"etf asset_type must be etf: {canonical!r}")
+        if active is not True:
+            raise ValueError(f"etf active must be True: {canonical!r}")
+        if not name:
+            raise ValueError(f"etf name must be non-empty: {canonical!r}")
+        pinyin_full = entry.get("pinyinFull")
+        pinyin_abbr = entry.get("pinyinAbbr")
+        if (
+            not isinstance(pinyin_full, str)
+            or not pinyin_full.strip()
+            or not isinstance(pinyin_abbr, str)
+            or not pinyin_abbr.strip()
+        ):
+            raise ValueError(f"etf pinyin fields must be non-empty: {canonical!r}")
+        if not isinstance(aliases, list):
+            raise ValueError(f"etf aliases must be a list: {canonical!r}")
+        if (
+            isinstance(popularity, bool)
+            or not isinstance(popularity, int)
+            or not math.isfinite(float(popularity))
+            or popularity < 0
+        ):
+            raise ValueError(f"etf popularity must be a non-negative integer: {canonical!r}")
+
+        norm_canonical = canonical.upper()
+        if norm_canonical in canonical_seen:
+            raise ValueError(f"duplicate etf canonical: {canonical!r}")
+        canonical_seen[norm_canonical] = canonical
+
+        existing = existing_codes.get(display.upper())
+        if existing is not None and existing != canonical:
+            raise ValueError(
+                f"etf display {display!r} collides with existing identity {existing!r}"
+            )
+
+    return
+def run_etf_only(output_path: Path, *, test: bool = False) -> List[List[Any]]:
+    """Merge the curated ETF-registry seed into the existing compressed JSON.
+
+    Preserves all non-ETF tuples in their original order, removes any old ETF
+    tuples, appends seed-generated ETF rows sorted by canonicalCode, validates,
+    and atomically replaces the output (unless ``test``).
+    """
+    seed_rows = load_etf_registry_seed()
+    etf_entries = build_etf_entries_from_seed(seed_rows)
+
+    existing = _load_existing_payload(output_path)
+    validate_stock_index_payload(existing, min_items=0)
+    non_etf = [item for item in existing if not (len(item) > 7 and item[7] == "etf")]
+    # Validate the seed ETF rows against the existing active stock/index rows so
+    # a display code that collides with another identity is rejected.
+    validate_etf_registry(etf_entries, non_etf_rows=non_etf)
+
+    etf_compressed = compress_index(etf_entries)
+    etf_compressed.sort(key=lambda item: str(item[0]))
+
+    merged = non_etf + etf_compressed
+    if not test:
+        _atomic_write_json(output_path, merged)
+    return merged
+
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='从 CSV 生成股票自动补全索引')
@@ -983,6 +1238,11 @@ def main():
         '--index-only',
         action='store_true',
         help='仅合并指数注册表 seed 到现有压缩 JSON，不重建股票索引'
+    )
+    parser.add_argument(
+        '--etf-only',
+        action='store_true',
+        help='仅合并 ETF 注册表 seed 到现有压缩 JSON，不重建股票索引'
     )
     parser.add_argument(
         '--test', '-t',
@@ -1025,6 +1285,24 @@ def main():
         print(f"      验证通过：{len(merged)} 条记录")
         return 0
 
+    # --etf-only: 只合并 ETF seed，不重建股票索引。
+    if args.etf_only:
+        print("数据源：etf-only（合并 ETF 注册表 seed）")
+        print("\n[1/3] 读取 ETF 注册表 seed...")
+        merged = run_etf_only(output_path, test=args.test)
+        print(f"      合并后共 {len(merged)} 条记录")
+        etf_rows = [item for item in merged if len(item) > 7 and item[7] == "etf"]
+        print(f"      其中 ETF {len(etf_rows)} 条")
+        if args.test:
+            print("\n[2/3] 测试模式：跳过写入文件")
+        else:
+            print(f"\n[2/3] 写入文件：{output_path}")
+            file_size = output_path.stat().st_size
+            print(f"      文件大小：{file_size / 1024:.2f} KB")
+        print("\n[3/3] 验证合并结果...")
+        print(f"      验证通过：{len(merged)} 条记录")
+        return 0
+
     print(f"数据源：{args.source}")
 
     # 加载数据
@@ -1047,6 +1325,18 @@ def main():
 
     print("\n[2/5] 生成索引数据...")
     index = build_stock_index(stocks)
+
+    # 合并 ETF 注册表 seed，防止后续重建擦除 ETF 行（股票列表 CSV 不含场内基金）。
+    print("\n[2.3/5] 合并 ETF 注册表 seed...")
+    etf_rows = load_etf_registry_seed()
+    etf_entries = build_etf_entries_from_seed(etf_rows)
+    # Validate the seed ETF rows against the freshly built stock rows so a
+    # display code colliding with a stock identity is rejected.
+    validate_etf_registry(etf_entries, non_etf_rows=compress_index(index))
+    # Canonical-sort ETF rows so the full rebuild is byte-stable and matches the
+    # ``--etf-only`` ordering; stock rows keep build order.
+    etf_entries.sort(key=lambda entry: str(entry["canonicalCode"]))
+    index.extend(etf_entries)
 
     # 合并指数注册表 seed，防止后续重建擦除 index 行。
     print("\n[2.5/5] 合并指数注册表 seed...")

@@ -465,6 +465,18 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响实时新闻页面的新鲜度、响应速度和单页数据量。'],
     notes: ['超时按该平台不可用处理；「财经热榜」聚合模式下单平台失败只做标注，不影响其他平台。'],
   },
+  'settings.data_source.baidu_finance_token': {
+    title: '股票查询 acs-token',
+    summary: '为「股票查询」页的资金 / 分析 tab 自动签出并携带百度财经要求的 acs-token，缺失会被上游风控挡回。',
+    usage: 'BAIDU_FINANCE_TOKEN_ENABLED 总开关，BAIDU_FINANCE_TOKEN_TTL_SEC 设 token 复用时长（秒）。',
+    valueNotes: [
+      '桌面端由 Electron 隐藏窗口签出后推入；服务器端由镜像内 Chromium 自签；两者都不可用时退回不带 token。',
+      '上游 token 寿命约 2 分钟，TTL 应小于此值；默认 90 秒。',
+      '关掉开关即退回不带 token，资金 / 分析 tab 会显示上游风控提示而非数据。',
+    ],
+    impact: ['只影响股票查询页的资金 / 分析两个 tab 能否取到数据；不影响分析主流程。'],
+    notes: ['上游对请求频率敏感，密集并发仍可能触发风控；此时会刷新 token 重试一次，仍失败则如实提示稍后重试。'],
+  },
   'settings.notification.FEISHU_WEBHOOK_URL': {
     title: '飞书群机器人 Webhook',
     summary: '配置飞书自定义群机器人，用于把分析报告推送到指定飞书群。',
@@ -1734,6 +1746,18 @@ const settingsHelpEnUS: SettingsHelpMap = {
     ],
     impact: ['Affects freshness, response latency and page size of the realtime news page.'],
     notes: ['A timeout marks that platform unavailable; in aggregate mode a single failed platform is only flagged and does not affect the others.'],
+  },
+  'settings.data_source.baidu_finance_token': {
+    title: 'Stock Query acs-token',
+    summary: 'Mints and attaches the acs-token Baidu Finance requires for the stock-query fund-flow / analysis tabs; without it the upstream risk gate rejects the request.',
+    usage: 'BAIDU_FINANCE_TOKEN_ENABLED is the master switch; BAIDU_FINANCE_TOKEN_TTL_SEC sets how long a token is reused (seconds).',
+    valueNotes: [
+      'Desktop mints it via a hidden Electron window and pushes it in; the server mints it via a bundled Chromium; if neither is available it falls back to token-less requests.',
+      'The upstream token lives about two minutes, so keep the TTL below that; default is 90 seconds.',
+      'Turning the switch off reverts to token-less requests, so the fund-flow / analysis tabs show an upstream risk-control notice instead of data.',
+    ],
+    impact: ['Only affects whether the fund-flow / analysis tabs of the stock-query page can load data; the analysis pipeline is unaffected.'],
+    notes: ['The upstream is rate-sensitive, so dense concurrent calls can still trip risk control; the proxy then refreshes the token and retries once, and on repeated failure reports an honest try-again-later message.'],
   },
   'settings.notification.FEISHU_WEBHOOK_URL': {
     title: 'Feishu Webhook URL',

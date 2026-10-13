@@ -129,6 +129,27 @@ python3 scripts/generate_index_from_csv.py --test  # 先测试
 python3 scripts/generate_index_from_csv.py         # 确认后生成
 ```
 
+全部场内 ETF 与主要指数不依赖 Tushare 抓取，而是来自仓内种子（`scripts/stock_index_seeds/etf_registry.csv`、`index_registry.csv`），由生成脚本确定性合并进同一份索引。ETF 种子覆盖**全部场内 ETF**（当前约 1695 支，而非早期的少量精选），由 `scripts/refresh_etf_registry.py` 从公开、免 Tushare token 的数据源刷新；指数种子仍是维护者精选的 manifest。全量重建会自动并入这两类种子；若只想离线补全而不重抓股票列表，可单独合并（输出字节稳定、可重复执行）：
+
+```bash
+python3 scripts/generate_index_from_csv.py --etf-only --test    # 预览 ETF 合并
+python3 scripts/generate_index_from_csv.py --etf-only           # 合并 ETF 种子
+python3 scripts/generate_index_from_csv.py --index-only         # 合并指数种子
+```
+
+#### 刷新全场内 ETF 种子（`refresh_etf_registry.py`）
+
+ETF 代码集与挂牌交易所取自新浪 `Market_Center.getHQNodeData`（节点 `etf_hq_fund`，场内 ETF 的权威清单），规范中文名取自天天基金公开的全量基金 `fund.eastmoney.com/js/fundcode_search.js`（名字缺失时回退新浪简称）。两个源都无需 token / 积分。交易所后缀（`.SH`/`.SZ`）由代码前缀经生成器自身的 ETF 规则推导、并与新浪 symbol 交叉校验，写出的 CSV 必定能通过 `build_etf_entries_from_seed` / `validate_etf_registry`；行按 canonical code 排序，输出字节稳定。当抓取数量明显偏少（疑似被限流的半截结果）时会拒绝覆盖既有种子。
+
+```bash
+python3 scripts/refresh_etf_registry.py            # 抓取并覆盖种子 CSV
+python3 scripts/refresh_etf_registry.py --test     # 抓取、校验并打印摘要，不写入
+```
+
+一键刷新脚本 `scripts/refresh_stock_index.py` 默认会在生成索引前以 best-effort 方式顺带刷新该 ETF 种子（网络失败只告警、沿用现有种子，不阻断股票索引刷新）；如需跳过可加 `--skip-etf`。
+
+新增或临时修正单支 ETF 时，也可以直接在 `etf_registry.csv` 追加 / 修改一行（`canonical_code` 形如 `515230.SH` / `159915.SZ`，`.SH`/`.SZ` 须与代码前缀所属交易所一致），再执行一次 `--etf-only` 即可；但常规的全量刷新应优先走 `refresh_etf_registry.py`。
+
 ### 本地客户端自动获取最新索引
 
 新版客户端默认会从项目 GitHub `main` 分支读取最新的 `apps/dsa-web/public/stocks.index.json`，并缓存到本地 `data/cache/stocks.index.json`。前端仍访问本地 `/stocks.index.json`，不需要直接跨域请求 GitHub。

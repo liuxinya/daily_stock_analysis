@@ -1082,10 +1082,25 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._get_hk_realtime_quote(stock_code)
         elif _is_etf_code(stock_code):
-            source_key = "akshare_etf"
+            # ETF 与普通 A 股一样可通过腾讯/新浪单码直连接口取行情（返回同一套
+            # 字段），只有 em 需要走 ETF 专用全量接口 fund_etf_spot_em（额外带量比/
+            # 52 周高低，但为全量拉取、依赖东财 push2）。此前所有 source 都被并到
+            # fund_etf_spot_em，使默认优先级 (tencent 优先) 里本应最稳的腾讯直连对
+            # ETF 失效——个股能出行情、ETF 却 404 即源于此。按 source 分流后，ETF
+            # 复用与个股相同的轻量兜底链路。
+            if source == "sina":
+                source_key = "akshare_sina"
+            elif source == "tencent":
+                source_key = "akshare_tencent"
+            else:
+                source_key = "akshare_etf"
             if not circuit_breaker.is_available(source_key):
                 logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
                 return None
+            if source == "sina":
+                return self._get_stock_realtime_quote_sina(stock_code)
+            elif source == "tencent":
+                return self._get_stock_realtime_quote_tencent(stock_code)
             return self._get_etf_realtime_quote(stock_code)
         else:
             source_key = f"akshare_{source}"

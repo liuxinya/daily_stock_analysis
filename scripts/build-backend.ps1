@@ -140,7 +140,10 @@ $pyInstallerArgs = @(
   '--collect-data', 'tiktoken',
   '--collect-data', 'akshare',
   '--collect-all', 'src.services.screening',
-  '--collect-all', 'futu'
+  '--collect-all', 'futu',
+  # 桌面端的 acs-token 由 Electron 自带 Chromium 签出，后端不走 Playwright 链路（惰性 import 兜底）；
+  # 排除 playwright 避免把其浏览器驱动打进客户端，徒增体积。
+  '--exclude-module', 'playwright'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'

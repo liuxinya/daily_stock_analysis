@@ -10,6 +10,19 @@ import apiClient from './index';
 
 const BASE = '/api/v1/baidu-finance';
 
+/**
+ * A 股 ETF 代码前缀，与后端 data_provider 的 ETF 判定（base.ETF_PREFIXES）保持一致：
+ * 上交所 51/52/56/58，深交所 15/16/18。ETF 与股票在百度上游走不同的接口和判别
+ * 参数，页面据此分流。
+ */
+const ETF_PREFIXES = ['51', '52', '56', '58', '15', '16', '18'] as const;
+
+/** 判断是否为 A 股 ETF 代码（6 位数字且命中 ETF 前缀）。 */
+export const isEtfCode = (code: string): boolean => {
+  const normalized = code.trim();
+  return /^\d{6}$/.test(normalized) && ETF_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+};
+
 /** 上游统一包装：真实数据在 Result 里。 */
 export type BaiduEnvelope<T> = {
   ResultCode?: number | string;
@@ -148,12 +161,31 @@ export const parseMarketData = (block?: MarketDataBlock): KlineRow[] => {
 };
 
 export const baiduFinanceApi = {
-  /** 日 K 线 + 压力位/支撑位。 */
+  /**
+   * 日 K 线 + 压力位/支撑位。
+   *
+   * 股票走 analysis-quotation（含 analysisData 的压力位/支撑位）；ETF 在该接口
+   * 恒为空，改走 getquotation 并带 ETF 判别参数。两者的 newMarketData 结构一致，
+   * 可复用 parseMarketData；但 ETF 响应没有 analysisData（无压力位/支撑位）。
+   */
   kline(code: string, market = 'ab') {
-    return get<BaiduEnvelope<{
+    type KlinePayload = BaiduEnvelope<{
       analysisData?: { price?: number; updateTime?: string; yl?: string; zc?: string };
       newMarketData?: MarketDataBlock;
-    }>>('analysis-quotation', {
+    }>;
+    if (isEtfCode(code)) {
+      return get<KlinePayload>('quotation', {
+        srcid: '5353',
+        all: '1',
+        code,
+        query: code,
+        financeType: 'etf',
+        stock_type: market,
+        group: `quotation_kline_${market}`,
+        ktype: 'day',
+      });
+    }
+    return get<KlinePayload>('analysis-quotation', {
       all: '1',
       newFormat: '1',
       ktype: 'day',
@@ -165,6 +197,7 @@ export const baiduFinanceApi = {
 
   /** 资金流向：大单拆分 + 分钟级资金流 + 行业资金。 */
   fundFlow(code: string, market = 'ab') {
+    const financeType = isEtfCode(code) ? 'etf' : 'stock';
     return get<BaiduEnvelope<{
       content?: {
         fundFlowSpread?: { result?: FundFlowSpread };
@@ -172,11 +205,11 @@ export const baiduFinanceApi = {
         fundFlowBlock?: { title?: string; result?: unknown[] };
       };
     }>>('fundflow', {
-      finance_type: 'stock',
+      finance_type: financeType,
       fund_flow_type: '',
       market,
       code,
-      type: 'stock',
+      type: financeType,
     });
   },
 
@@ -231,7 +264,7 @@ export const baiduFinanceApi = {
       market,
       code,
       query: code,
-      financeType: 'stock',
+      financeType: isEtfCode(code) ? 'etf' : 'stock',
       benefitType: '',
       pn: '0',
       rn: String(rows),

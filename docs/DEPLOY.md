@@ -69,6 +69,12 @@ docker-compose -f ./docker/docker-compose.yml ps
 
 如果只能使用 `512M`，请避免同时启动 `server` 和 `analyzer`，并关闭非必要的大盘复盘、新闻扩展和图片报告能力。
 
+> **镜像体积与浏览器依赖**：镜像内置 Chromium，供「股票查询」页的资金 / 分析 tab 在服务器端自签
+> 百度财经 `acs-token`（详见 [股票查询说明](stock-query.md)），因此镜像比旧版约大数百 MB，首次拉取 /
+> 构建耗时相应增加。浏览器装在共享目录 `/opt/ms-playwright`，非 root 的 `dsa` 用户只读即可。若不需要
+> 该能力，可设 `BAIDU_FINANCE_TOKEN_ENABLED=false` 退回不带 token 调用（这两个 tab 命中上游风控时显示
+> 如实提示而非数据），其余功能不受影响。
+
 ### 4. 常用管理命令
 
 ```bash

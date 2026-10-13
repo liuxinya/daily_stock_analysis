@@ -10,6 +10,7 @@
 - 桌面端会自动从本机 `8000-8100` 选择可用端口，并把实际选择的端口同步给内置后端；桌面端不依赖 `.env` 里的 `WEBUI_PORT` 来决定窗口连接地址，避免用户改端口后 Electron 仍等待旧端口导致启动超时
 - Desktop backend 默认随 `requirements.txt` 安装并冻结 `futu-api==10.8.6808`；Windows/macOS 构建脚本会在源码环境和 PyInstaller 产物中分别执行 `import futu`，防止发布包只安装但未携带 SDK。
 - 报告“分享”按钮使用 Electron 自带的隐藏 Chromium 窗口渲染本地后端输出的受限 HTML，并保存为 PNG；桌面安装包无需额外携带 `wkhtmltoimage`、`markdown-to-file` 或 Playwright 浏览器。
+- “股票查询”页的资金 / 分析 tab 需要百度财经 `acs-token` 签名，同样由 Electron 内置 Chromium 的隐藏窗口周期性签出并推给本地后端，桌面端**不打包 Playwright 浏览器**（后端构建脚本显式 `--exclude-module playwright`）；服务器 / Docker 部署则改由镜像内置的 Chromium 自签。详见 [股票查询说明](stock-query.md)。
 
 ## 本地开发
 

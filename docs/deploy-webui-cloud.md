@@ -76,6 +76,10 @@ WEBUI_PORT=8888
 
 ## 方式二：Docker Compose
 
+> **镜像体积提示**：镜像内置 Chromium，供「股票查询」页的资金 / 分析 tab 在服务器端自签百度财经
+> `acs-token`（详见 [股票查询说明](stock-query.md)），因此镜像比旧版约大数百 MB，首次拉取 / 构建耗时相应
+> 增加。若不需要该能力，可设 `BAIDU_FINANCE_TOKEN_ENABLED=false` 退回不带 token 调用，其余功能不受影响。
+
 ### 第一步：确认已有 .env 配置
 
 项目的 `docker/docker-compose.yml` 在容器内部已经自动设置了 `WEBUI_HOST=0.0.0.0`，你不需要在 `.env` 里再改监听地址，Docker 会自动处理。

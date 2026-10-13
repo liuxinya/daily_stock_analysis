@@ -120,6 +120,9 @@ pushd "${ROOT_DIR}" >/dev/null
 cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --runtime-hook "${SCRIPT_DIR}/pyinstaller_runtime_compat.py" --add-data "static:static" --add-data "strategies:strategies" --add-data "src/assets/share_image:src/assets/share_image" --collect-data litellm --collect-data tiktoken --collect-data akshare)
 cmd+=("--collect-all" "src.services.screening")
 cmd+=("--collect-all" "futu")
+# 桌面端的 acs-token 由 Electron 自带 Chromium 签出，后端不走 Playwright 链路（惰性 import 兜底）；
+# 排除 playwright 避免把其浏览器驱动打进客户端，徒增体积。
+cmd+=("--exclude-module" "playwright")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
 echo "Running: ${cmd[*]}"

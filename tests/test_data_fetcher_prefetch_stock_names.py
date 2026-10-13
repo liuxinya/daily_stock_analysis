@@ -268,7 +268,11 @@ class TestPrefetchStockNames(unittest.TestCase):
             def disconnect(self):
                 return None
 
-        with patch.object(pytdx, "_get_pytdx", return_value=_FakeApi):
+        # 隔离本地索引解析（stocks.index.json 现已覆盖全场内 ETF，含 159559/159560），
+        # 让用例聚焦于 pytdx 冷却后回退到后续 fetcher 的分发契约——与同文件其他用例
+        # patch ``get_index_stock_name`` 的做法一致。
+        with patch.object(pytdx, "_get_pytdx", return_value=_FakeApi), \
+                patch("data_provider.base.get_index_stock_name", return_value=None):
             first = manager.get_stock_name("159559", allow_realtime=False)
             second = manager.get_stock_name("159560", allow_realtime=False)
 
