@@ -98,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 「实时新闻」页下线关键词筛选：移除顶部搜索框、后端 `GET /api/v1/realtime-news/search`（含 `list_search_news`、东财 JSONP 与财联社电报/深度全文搜索适配器）、`supports_search` / `query` 字段与 `RealtimeNewsList` 中只服务搜索模式的空态覆盖 props；各平台 tab 只保留市场级快讯与分页，`/platforms`、`/items` 与「消息面汇总」不受影响。同步更新 `docs/realtime-news.md` 与前后端回归测试。
 - [改进] 「实时新闻」页把「消息面汇总」tab 改名为「AI汇总与分析」，右上角动作按钮由次要样式改为项目通用主按钮样式（`primary`），文案改为「分析最新新闻 / 重新分析最新新闻」，页内空态与说明文案同步更新。
 - [新功能] 把新闻聚合到同一个页面：左侧菜单「实时新闻」改为「新闻分析」（`/news-analysis`），页内顶部新增「实时新闻 / 新闻搜索 / CCTV新闻」三个 tab，`tab` 参数存 URL 便于深链；「CCTV 新闻」独立菜单项移除。原 `RealtimeNewsPage` / `CctvNewsPage` 拆为 `RealtimeNewsView` / `CctvNewsView`（去掉各自的 `AppPage` 与页面标题，保留自己的 PageHeader 与操作按钮，按 tab 懒加载）；CCTV 内层子 tab 参数由 `tab` 改为 `ctab` 以避开外层占用，CCTV 分析完成通知改跳 `/news-analysis?tab=cctv&ctab=analysis`。「新闻搜索」先放占位空态。旧链接 `/realtime-news`、`/cctv-news` 保留重定向。
+- [新功能] 「新闻搜索」tab 落地：把关键词交给各站点自己的站内搜索接口，五个平台 tab（财联社 / 同花顺-问财 / 东方财富 / 华尔街见闻 / 金十数据），只返回最近 7 天内、且确实提到关键词的条目。新增 `src/services/news_search_service.py`（各平台归一化 + 按平台翻页 + 时间窗与相关性过滤 + 标题去重）、`GET /api/v1/news-search/platforms` 与 `GET /api/v1/news-search/items`（`q` / `platform` / `days` / `limit`）、前端 `NewsSearchView` 与 `newsSearchApi`，以及 `docs/news-search.md`（五个上游的接口形状、翻页方式与已知限制）。东财的搜索接口按 TLS 指纹分流，原生 `requests` 只拿到降级响应，因此该模块统一走 `curl_cffi` + Chrome 指纹。财联社合并「电报 + 资讯/深度」两段（`type=all` 会把 `rn` 摊薄到十几个 section，不能用），同样关键词的返回条数由 2 条增至 9 条。
 
 ## [3.31.0] - 2026-08-23
 

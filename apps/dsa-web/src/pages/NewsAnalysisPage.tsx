@@ -1,13 +1,14 @@
 import type React from 'react';
 import { Suspense, lazy, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search } from 'lucide-react';
 
-import { AppPage, EmptyState, Loading } from '../components/common';
+import { AppPage, Loading } from '../components/common';
 import { cn } from '../utils/cn';
 
-// 两个视图各自较重（消息面汇总 / CCTV 分析组件），保持按 tab 懒加载，避免首屏把两份都拉下来。
+// 三个视图各自较重（消息面汇总 / CCTV 分析 / 多平台搜索），保持按 tab 懒加载，
+// 避免首屏把三份都拉下来。
 const RealtimeNewsView = lazy(() => import('./RealtimeNewsView'));
+const NewsSearchView = lazy(() => import('./NewsSearchView'));
 const CctvNewsView = lazy(() => import('./CctvNewsView'));
 
 const TABS = [
@@ -72,13 +73,7 @@ const NewsAnalysisPage: React.FC = () => {
 
       <Suspense fallback={<Loading label="正在加载" />}>
         {activeTab === 'realtime' ? <RealtimeNewsView /> : null}
-        {activeTab === 'search' ? (
-          <EmptyState
-            icon={<Search className="h-6 w-6" />}
-            title="新闻搜索"
-            description="该功能待定，暂未开放。"
-          />
-        ) : null}
+        {activeTab === 'search' ? <NewsSearchView /> : null}
         {activeTab === 'cctv' ? <CctvNewsView /> : null}
       </Suspense>
     </AppPage>

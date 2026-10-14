@@ -4,8 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import NewsAnalysisPage from '../NewsAnalysisPage';
 
-// 两个视图各自很重，这里只关心 tab 编排，所以替换成哨兵节点。
+// 三个视图各自很重，这里只关心 tab 编排，所以替换成哨兵节点。
 vi.mock('../RealtimeNewsView', () => ({ default: () => <div>realtime-view</div> }));
+vi.mock('../NewsSearchView', () => ({ default: () => <div>news-search-view</div> }));
 vi.mock('../CctvNewsView', () => ({ default: () => <div>cctv-view</div> }));
 
 const renderPage = (entry = '/news-analysis') => render(
@@ -33,11 +34,11 @@ describe('NewsAnalysisPage', () => {
     });
   });
 
-  it('「新闻搜索」tab 先显示占位空态', async () => {
+  it('「新闻搜索」tab 渲染搜索视图', async () => {
     renderPage('/news-analysis?tab=search');
 
     expect(screen.getByRole('tab', { name: '新闻搜索' })).toHaveAttribute('aria-selected', 'true');
-    expect(await screen.findByText('该功能待定，暂未开放。')).toBeInTheDocument();
+    expect(await screen.findByText('news-search-view')).toBeInTheDocument();
   });
 
   it('支持从 URL 深链到某个 tab（CCTV 分析完成通知用）', async () => {
