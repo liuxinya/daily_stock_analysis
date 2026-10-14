@@ -63,7 +63,7 @@ export const CctvAnalysisNotifier: React.FC = () => {
                 className="home-accent-link text-sm"
                 onClick={() => {
                   dismissNotice();
-                  navigate('/cctv-news?tab=analysis');
+                  navigate('/news-analysis?tab=cctv&ctab=analysis');
                 }}
               >
                 查看结果

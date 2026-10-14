@@ -12,7 +12,6 @@ akshare 与第一财经返回北京本地 naive 时间，NewsNow 与雪球返回
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import threading
@@ -92,22 +91,6 @@ _WINDOW_SINGLE_SHOT_ITEMS = 100
 
 _BRACKET_TITLE_PATTERN = re.compile(r"^\s*[【\[]([^】\]]{2,60})[】\]]\s*(.*)$", re.S)
 
-# === 关键词搜索新闻（用户任意输入关键词，按全文检索拉新闻/深度）===
-# 复用市场级的时间归一化、链接白名单与短 TTL 缓存，只新增各平台的全文搜索上游。
-# 只有提供全文检索的上游能服务任意关键词：东方财富（JSONP 全文检索）、财联社（电报 + 深度）。
-# 同花顺快讯接口是「证券代码 + marketId」维度、不接受自由关键词，因此不进搜索路径。
-TAG_DEPTH = "深度"
-
-# 东方财富全文搜索（JSONP）。
-_EM_SEARCH_URL = "https://search-api-web.eastmoney.com/search/jsonp"
-_EM_SEARCH_CALLBACK = "jsonp_dsa_realtime"  # JSONP 回调名，仅用于剥壳，无业务含义
-
-# 财联社全文搜索接口（keyword-based）；签名只覆盖 app/os/sv 公共参数，复用 _cls_sign。
-_CLS_SEARCH_PATH = "/api/sw"
-_CLS_SEARCH_PAGE_SIZE = 30
-# 搜索结果里命中关键词的 <em> 高亮标签，归一化前单独剥除（见 normalize_cls_search）。
-_EM_HIGHLIGHT_PATTERN = re.compile(r"</?em>", re.IGNORECASE)
-
 
 class RealtimeNewsServiceError(ValueError):
     """面向用户的参数校验错误（如未知平台），映射为 400。"""
@@ -150,9 +133,6 @@ class RealtimeNewsPlatform:
     upstream: str = ""
     # 上游是否提供发布时间；为 False 的平台不参与聚合排序
     has_published_at: bool = True
-    # 是否支持「按任意关键词全文搜索」。为 False 的平台在搜索模式下返回空态，
-    # 市场级快讯仍走原有 provider，与此开关无关。
-    supports_search: bool = False
 
     @property
     def available(self) -> bool:
@@ -176,10 +156,10 @@ class RealtimeNewsEntry:
 # 当前每个平台都有可用上游；`PROVIDER_UNAVAILABLE` 仍保留给「已知平台但暂无源」的占位场景
 # （接口返回 200 + 空列表，前端展示空态），需要时直接加一行即可。
 PLATFORMS: Tuple[RealtimeNewsPlatform, ...] = (
-    RealtimeNewsPlatform(AGGREGATE_PLATFORM_KEY, "财经热榜", PROVIDER_AGGREGATE, supports_search=True),
-    RealtimeNewsPlatform("cls", "财联社", PROVIDER_CLS, _CLS_TELEGRAPH_NAME, supports_search=True),
+    RealtimeNewsPlatform(AGGREGATE_PLATFORM_KEY, "财经热榜", PROVIDER_AGGREGATE),
+    RealtimeNewsPlatform("cls", "财联社", PROVIDER_CLS, _CLS_TELEGRAPH_NAME),
     RealtimeNewsPlatform("ths", "同花顺", PROVIDER_AKSHARE, "stock_info_global_ths"),
-    RealtimeNewsPlatform("eastmoney", "东方财富", PROVIDER_AKSHARE, "stock_info_global_em", supports_search=True),
+    RealtimeNewsPlatform("eastmoney", "东方财富", PROVIDER_AKSHARE, "stock_info_global_em"),
     RealtimeNewsPlatform("wallstreetcn", "华尔街见闻", PROVIDER_NEWSNOW, "wallstreetcn-quick"),
     RealtimeNewsPlatform("xueqiu", "雪球", PROVIDER_XUEQIU, "livenews"),
     RealtimeNewsPlatform("jin10", "金十数据", PROVIDER_NEWSNOW, "jin10"),
@@ -917,197 +897,6 @@ def _merge_sort_dedupe(entries: List[RealtimeNewsEntry]) -> List[RealtimeNewsEnt
     return deduped
 
 
-def _combine_search_sources(
-    sources: List[Callable[[], List[RealtimeNewsEntry]]], *, limit: int
-) -> List[RealtimeNewsEntry]:
-    """顺序拉取一个平台的多个搜索来源（如财联社电报 + 深度），单一来源失败不拖垮其余；
-    全部来源都失败才判定平台不可用（抛出首个异常 → 503）。"""
-    results: List[List[RealtimeNewsEntry]] = []
-    errors: List[RealtimeNewsUpstreamError] = []
-    for source in sources:
-        try:
-            results.append(source())
-        except RealtimeNewsUpstreamError as exc:
-            errors.append(exc)
-    if not results and errors:
-        raise errors[0]
-    merged = [entry for group in results for entry in group]
-    return _merge_sort_dedupe(merged)[:limit]
-
-
-def normalize_em_search(payload: Any, platform: RealtimeNewsPlatform, *, limit: int) -> List[RealtimeNewsEntry]:
-    """东方财富全文搜索 ``result.cmsArticleWebOld`` → 新闻条目。date 是北京本地时间。"""
-    if not isinstance(payload, dict):
-        raise RealtimeNewsUpstreamError("invalid Eastmoney search response: expected object")
-    result = payload.get("result")
-    rows = result.get("cmsArticleWebOld") if isinstance(result, dict) else None
-    if not isinstance(rows, list):
-        return []
-    entries: List[RealtimeNewsEntry] = []
-    for row in rows[:max(0, limit)]:
-        if not isinstance(row, dict):
-            continue
-        title = _clean_text(row.get("title"))
-        summary = _clean_text(row.get("content"))
-        if not title:
-            title = _fallback_title(summary)
-        if not title:
-            continue
-        source = _clean_text(row.get("mediaName"))
-        entries.append(RealtimeNewsEntry(
-            platform=platform.key,
-            platform_label=platform.label,
-            title=title,
-            summary=summary if summary != title else "",
-            url=_https_url(row.get("url")),
-            published_at=_parse_beijing_time(row.get("date")),
-            tag=source if source and source != platform.label else "",
-        ))
-    return entries
-
-
-def _fetch_em_search(keyword: str, platform: RealtimeNewsPlatform, *, limit: int, timeout: float) -> List[RealtimeNewsEntry]:
-    """东方财富按关键词走站内全文搜索（JSONP）。"""
-    param = {
-        "uid": "",
-        "keyword": keyword,
-        "type": ["cmsArticleWebOld"],
-        "client": "web",
-        "clientType": "web",
-        "clientVersion": "curr",
-        "param": {
-            "cmsArticleWebOld": {
-                "searchScope": "default",
-                "sort": "default",
-                "pageIndex": 1,
-                "pageSize": max(1, min(limit, 50)),
-                "preTag": "",
-                "postTag": "",
-            }
-        },
-    }
-    try:
-        response = requests.get(
-            _EM_SEARCH_URL,
-            params={"cb": _EM_SEARCH_CALLBACK, "param": json.dumps(param, ensure_ascii=False)},
-            timeout=timeout,
-            headers={
-                "User-Agent": _DIRECT_USER_AGENT,
-                "Accept": "*/*",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Referer": "https://so.eastmoney.com/",
-            },
-        )
-        response.raise_for_status()
-        payload = _strip_jsonp(response.text)
-    except requests.RequestException as exc:
-        raise RealtimeNewsUpstreamError(f"Eastmoney search request failed: {_request_failure_reason(exc)}") from exc
-    except ValueError as exc:
-        raise RealtimeNewsUpstreamError("Eastmoney search returned invalid JSON") from exc
-    return normalize_em_search(payload, platform, limit=limit)
-
-
-def _strip_jsonp(text: str) -> Any:
-    """剥掉 JSONP 外壳 ``cb({...})`` 取出 JSON；找不到括号时按 JSON 解析失败处理。"""
-    start = text.find("(")
-    end = text.rfind(")")
-    if start < 0 or end <= start:
-        raise ValueError("not a JSONP payload")
-    return json.loads(text[start + 1:end])
-
-
-def normalize_cls_search(
-    payload: Any, platform: RealtimeNewsPlatform, *, limit: int, type_: str, tag: str
-) -> List[RealtimeNewsEntry]:
-    """财联社全文搜索 ``data.<type>.data`` → 条目。time 是 epoch 秒；descr 含 <em> 高亮由清洗剥掉。"""
-    if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
-        raise RealtimeNewsUpstreamError("invalid Cls search response")
-    section = payload["data"].get(type_)
-    rows = section.get("data") if isinstance(section, dict) else None
-    if not isinstance(rows, list):
-        return []
-    entries: List[RealtimeNewsEntry] = []
-    for row in rows[:max(0, limit)]:
-        if not isinstance(row, dict):
-            continue
-        # 搜索结果把命中关键词用 <em> 高亮；先剥掉这对标签再清洗，避免通用「标签→空格」
-        # 规则在中文正文里留下零散空格（如「公司拟 回购 股份」）。
-        body = _clean_text(_EM_HIGHLIGHT_PATTERN.sub("", str(row.get("descr") or row.get("brief") or "")))
-        title = _clean_text(row.get("title"))
-        if title:
-            prefix = f"【{title}】"
-            if body.startswith(prefix):
-                body = _clean_text(body[len(prefix):])
-        else:
-            title, remainder = _split_bracket_title(body)
-            if title:
-                body = remainder
-            else:
-                title = _fallback_title(body)
-        if not title:
-            continue
-        article_id = _clean_text(row.get("id"))
-        entries.append(RealtimeNewsEntry(
-            platform=platform.key,
-            platform_label=platform.label,
-            title=title,
-            summary=body if body != title else "",
-            url=f"{_CLS_BASE_URL}/detail/{article_id}" if article_id else "",
-            published_at=_parse_epoch_seconds(row.get("time") or row.get("ctime")),
-            tag=tag,
-        ))
-    return entries
-
-
-def _fetch_cls_search(
-    keyword: str, platform: RealtimeNewsPlatform, *, type_: str, tag: str, limit: int, timeout: float
-) -> List[RealtimeNewsEntry]:
-    """财联社全文搜索。sign 只覆盖 app/os/sv 公共参数（在 query），keyword/type 走 POST body。"""
-    query = dict(_CLS_COMMON_PARAMS)
-    query["sign"] = _cls_sign(query)
-    body = {"type": type_, "keyword": keyword, "rn": max(1, min(limit, _CLS_SEARCH_PAGE_SIZE)), "page": 0}
-    body.update(_CLS_COMMON_PARAMS)
-    try:
-        response = requests.post(
-            f"{_CLS_BASE_URL}{_CLS_SEARCH_PATH}",
-            params=query,
-            json=body,
-            timeout=timeout,
-            headers={
-                "User-Agent": _DIRECT_USER_AGENT,
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "zh-CN,zh;q=0.9",
-                "Referer": f"{_CLS_BASE_URL}/searchPage",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except requests.RequestException as exc:
-        raise RealtimeNewsUpstreamError(f"Cls search request failed: {_request_failure_reason(exc)}") from exc
-    except ValueError as exc:
-        raise RealtimeNewsUpstreamError("Cls search returned invalid JSON") from exc
-    return normalize_cls_search(payload, platform, limit=limit, type_=type_, tag=tag)
-
-
-def _fetch_cls_combined(keyword: str, platform: RealtimeNewsPlatform, *, limit: int, timeout: float) -> List[RealtimeNewsEntry]:
-    """财联社关键词搜索 = 电报快讯（telegram）+ 深度文章（depth，tag=深度）。"""
-    return _combine_search_sources(
-        [
-            lambda: _fetch_cls_search(keyword, platform, type_="telegram", tag="", limit=limit, timeout=timeout),
-            lambda: _fetch_cls_search(keyword, platform, type_="depth", tag=TAG_DEPTH, limit=limit, timeout=timeout),
-        ],
-        limit=limit,
-    )
-
-
-# 关键词搜索 provider 注册表：平台 key → 拉取函数。市场级聚合平台（hot）单独处理。
-_SEARCH_FETCHERS: Dict[str, Callable[..., List[RealtimeNewsEntry]]] = {
-    "eastmoney": _fetch_em_search,
-    "cls": _fetch_cls_combined,
-}
-
-
 @dataclass
 class _CacheEntry:
     entries: List[RealtimeNewsEntry] = field(default_factory=list)
@@ -1139,7 +928,6 @@ class RealtimeNewsService:
                     "provider": item.provider,
                     "available": item.available,
                     "has_published_at": item.has_published_at,
-                    "supports_search": item.supports_search,
                 }
                 for item in PLATFORMS
             ],
@@ -1175,47 +963,6 @@ class RealtimeNewsService:
             "page_size": page_size,
             "failed_platforms": failed,
             "fetched_at": datetime.now(SHANGHAI_TZ).isoformat(timespec="seconds"),
-        }
-
-    def list_search_news(
-        self, *, platform: str, q: str, page: int = 1, page_size: int = 20
-    ) -> Dict[str, Any]:
-        """按任意关键词全文搜索某平台的新闻。关键词为空在此处报 400。
-
-        不支持搜索的平台返回 available=False + 空列表（前端展示空态），与市场级
-        占位平台的约定一致；聚合（hot）并发拉所有支持搜索的平台，单源失败不影响整体。
-        """
-        key = (platform or AGGREGATE_PLATFORM_KEY).strip().lower()
-        target = PLATFORM_BY_KEY.get(key)
-        if target is None:
-            raise RealtimeNewsServiceError(f"unknown platform: {platform}")
-        keyword = _clean_text(q)
-        if not keyword:
-            raise RealtimeNewsServiceError("search keyword must not be empty")
-        page = max(1, int(page))
-        page_size = max(1, min(int(page_size), 100))
-
-        failed: List[str] = []
-        if not target.supports_search:
-            entries: List[RealtimeNewsEntry] = []
-        elif target.provider == PROVIDER_AGGREGATE:
-            entries, failed = self._aggregate_search_entries(keyword)
-        else:
-            entries = self._search_entries_for(target, keyword)
-
-        start = (page - 1) * page_size
-        return {
-            "platform": target.key,
-            "platform_label": target.label,
-            "available": target.supports_search,
-            "has_published_at": True,
-            "items": [_entry_to_dict(entry) for entry in entries[start:start + page_size]],
-            "total": len(entries),
-            "page": page,
-            "page_size": page_size,
-            "failed_platforms": failed,
-            "fetched_at": datetime.now(SHANGHAI_TZ).isoformat(timespec="seconds"),
-            "query": keyword,
         }
 
     def _aggregate_entries(self) -> Tuple[List[RealtimeNewsEntry], List[str]]:
@@ -1320,33 +1067,8 @@ class RealtimeNewsService:
             return _fetch_cls(platform, limit=limit, timeout=timeout)
         raise RealtimeNewsServiceError(f"platform has no upstream: {platform.key}")
 
-    def _aggregate_search_entries(self, keyword: str) -> Tuple[List[RealtimeNewsEntry], List[str]]:
-        """并发拉取所有支持搜索的平台（东财/财联社），单源失败不影响整体。"""
-        sources = [
-            item for item in PLATFORMS
-            if item.supports_search and item.provider != PROVIDER_AGGREGATE
-        ]
-        merged: List[RealtimeNewsEntry] = []
-        failed: List[str] = []
-        budget = max(1.0, min(float(self.config.realtime_news_fetch_timeout_sec), 30.0)) + 4.0
-        with ThreadPoolExecutor(max_workers=max(1, len(sources))) as pool:
-            futures = {pool.submit(self._search_entries_for, item, keyword): item for item in sources}
-            for future, item in futures.items():
-                try:
-                    merged.extend(future.result(timeout=budget))
-                except Exception as exc:
-                    failed.append(item.key)
-                    logger.warning("Realtime search source failed platform=%s: %s", item.key, exc)
-        return _merge_sort_dedupe(merged), failed
-
     def _entries_for(self, platform: RealtimeNewsPlatform) -> List[RealtimeNewsEntry]:
         return self._cached_entries(platform.key, lambda: self._fetch(platform))
-
-    def _search_entries_for(self, platform: RealtimeNewsPlatform, keyword: str) -> List[RealtimeNewsEntry]:
-        # 搜索缓存键独立于市场级（search: 前缀 + 关键词），不与 platform.key 冲突
-        return self._cached_entries(
-            f"search:{platform.key}:{keyword}", lambda: self._fetch_search(platform, keyword)
-        )
 
     def _cached_entries(
         self, cache_key: str, fetch: Callable[[], List[RealtimeNewsEntry]]
@@ -1385,15 +1107,6 @@ class RealtimeNewsService:
         if platform.provider == PROVIDER_YICAI:
             return _fetch_yicai(platform, limit=limit, timeout=timeout)
         return self._fetch_single_shot(platform, limit=limit, timeout=timeout)
-
-    def _fetch_search(self, platform: RealtimeNewsPlatform, keyword: str) -> List[RealtimeNewsEntry]:
-        limit = max(1, int(self.config.realtime_news_max_items_per_platform))
-        timeout = max(1.0, min(float(self.config.realtime_news_fetch_timeout_sec), 30.0))
-        fetcher = _SEARCH_FETCHERS.get(platform.key)
-        if fetcher is None:
-            # 不支持搜索的平台不应走到这里（list_search_news 已返回空），兜底返回空
-            return []
-        return fetcher(keyword, platform, limit=limit, timeout=timeout)
 
 
 def _entry_to_dict(entry: RealtimeNewsEntry) -> Dict[str, Any]:

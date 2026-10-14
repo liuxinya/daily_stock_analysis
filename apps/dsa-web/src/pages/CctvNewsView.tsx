@@ -5,7 +5,6 @@ import { RefreshCw, Search, Sparkles } from 'lucide-react';
 
 import {
   ApiErrorAlert,
-  AppPage,
   Button,
   Card,
   EmptyState,
@@ -52,16 +51,20 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'analysis', label: 'AI 新闻分析' },
 ];
 
-const CctvNewsPage: React.FC = () => {
+/**
+ * 「CCTV新闻」视图：按天浏览《新闻联播》文字稿并做 AI 解读。
+ *
+ * 由 NewsAnalysisPage 作为顶层 tab 之一挂载，因此不自带 AppPage 容器与页面标题
+ * （标题由外层 tab 承担），但保留自己的 PageHeader 以承载描述与「同步新闻」按钮。
+ * 内部子 tab 用 `ctab` 参数，避免与外层的 `tab`（实时新闻 / 新闻搜索 / CCTV新闻）冲突。
+ */
+const CctvNewsView: React.FC = () => {
   const location = useLocation();
-  useEffect(() => {
-    document.title = 'CCTV 新闻 - DSA';
-  }, []);
 
   const [activeTab, setActiveTab] = useState<TabKey>('news');
 
   useEffect(() => {
-    const requestedTab = new URLSearchParams(location.search).get('tab');
+    const requestedTab = new URLSearchParams(location.search).get('ctab');
     if (requestedTab === 'news' || requestedTab === 'analysis') {
       setActiveTab(requestedTab);
     }
@@ -319,7 +322,7 @@ const CctvNewsPage: React.FC = () => {
   const totalPages = Math.max(1, Math.ceil(itemsTotal / SEARCH_PAGE_SIZE));
 
   return (
-    <AppPage className="space-y-5">
+    <div className="space-y-5">
       <PageHeader
         eyebrow="CCTV News"
         title="新闻联播"
@@ -583,8 +586,8 @@ const CctvNewsPage: React.FC = () => {
         loading={transcriptLoading}
         error={transcriptError}
       />
-    </AppPage>
+    </div>
   );
 };
 
-export default CctvNewsPage;
+export default CctvNewsView;

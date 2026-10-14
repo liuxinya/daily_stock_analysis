@@ -95,6 +95,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [修复] 百度财经 acs-token 自签失败后新增 60s 冷却：自签单次预算 20s 且被进程内锁串行化，原先失败时每个请求都要白等满一轮，ETF 页「概览」的日 K 与资金两个面板叠加能卡住几十秒。冷却期内直接降级并如实报错；同时补上「没抓到 token」与「进入冷却」两条可排障日志（此前只有浏览器异常会留痕）。
 - [文档] `docs/stock-query.md` 补「本地直接起后端（非 Docker、非桌面）需先 `pip install -r requirements.txt` 装上 playwright 并重启」与 ETF 排障：ETF 的日 K 走被风控的 `quotation`（个股走未被风控的 `analysis-quotation`），所以没有 token 时 ETF 比个股多坏一个面板。
+- [改进] 「实时新闻」页下线关键词筛选：移除顶部搜索框、后端 `GET /api/v1/realtime-news/search`（含 `list_search_news`、东财 JSONP 与财联社电报/深度全文搜索适配器）、`supports_search` / `query` 字段与 `RealtimeNewsList` 中只服务搜索模式的空态覆盖 props；各平台 tab 只保留市场级快讯与分页，`/platforms`、`/items` 与「消息面汇总」不受影响。同步更新 `docs/realtime-news.md` 与前后端回归测试。
+- [改进] 「实时新闻」页把「消息面汇总」tab 改名为「AI汇总与分析」，右上角动作按钮由次要样式改为项目通用主按钮样式（`primary`），文案改为「分析最新新闻 / 重新分析最新新闻」，页内空态与说明文案同步更新。
+- [新功能] 把新闻聚合到同一个页面：左侧菜单「实时新闻」改为「新闻分析」（`/news-analysis`），页内顶部新增「实时新闻 / 新闻搜索 / CCTV新闻」三个 tab，`tab` 参数存 URL 便于深链；「CCTV 新闻」独立菜单项移除。原 `RealtimeNewsPage` / `CctvNewsPage` 拆为 `RealtimeNewsView` / `CctvNewsView`（去掉各自的 `AppPage` 与页面标题，保留自己的 PageHeader 与操作按钮，按 tab 懒加载）；CCTV 内层子 tab 参数由 `tab` 改为 `ctab` 以避开外层占用，CCTV 分析完成通知改跳 `/news-analysis?tab=cctv&ctab=analysis`。「新闻搜索」先放占位空态。旧链接 `/realtime-news`、`/cctv-news` 保留重定向。
 
 ## [3.31.0] - 2026-08-23
 

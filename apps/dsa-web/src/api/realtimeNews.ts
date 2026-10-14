@@ -9,8 +9,6 @@ export type RealtimeNewsPlatform = {
   available: boolean;
   /** 上游是否提供发布时间；为 false 的平台不参与「财经热榜」聚合排序 */
   hasPublishedAt: boolean;
-  /** 是否支持「按任意关键词全文搜索」；为 false 的平台在搜索模式下展示空态 */
-  supportsSearch: boolean;
 };
 
 export type RealtimeNewsPlatformListResponse = {
@@ -42,8 +40,6 @@ export type RealtimeNewsItemListResponse = {
   /** 聚合模式下失败的平台 key */
   failedPlatforms: string[];
   fetchedAt: string | null;
-  /** 仅搜索模式回显：本次使用的搜索关键词（市场级 /items 为 null） */
-  query: string | null;
 };
 
 export type RealtimeNewsItemListQuery = {
@@ -52,24 +48,8 @@ export type RealtimeNewsItemListQuery = {
   pageSize?: number;
 };
 
-export type RealtimeNewsSearchQuery = {
-  platform?: string;
-  /** 任意搜索关键词（股票名、行业、事件等） */
-  q: string;
-  page?: number;
-  pageSize?: number;
-};
-
 function toItemListParams(query: RealtimeNewsItemListQuery = {}): Record<string, string | number> {
   const params: Record<string, string | number> = {};
-  if (query.platform) params.platform = query.platform;
-  if (query.page !== undefined) params.page = query.page;
-  if (query.pageSize !== undefined) params.page_size = query.pageSize;
-  return params;
-}
-
-function toSearchParams(query: RealtimeNewsSearchQuery): Record<string, string | number> {
-  const params: Record<string, string | number> = { q: query.q };
   if (query.platform) params.platform = query.platform;
   if (query.page !== undefined) params.page = query.page;
   if (query.pageSize !== undefined) params.page_size = query.pageSize;
@@ -86,15 +66,6 @@ export const realtimeNewsApi = {
   listItems: async (query: RealtimeNewsItemListQuery = {}): Promise<RealtimeNewsItemListResponse> => {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/realtime-news/items', {
       params: toItemListParams(query),
-      timeout: 30000,
-    });
-    return toCamelCase<RealtimeNewsItemListResponse>(response.data);
-  },
-
-  // 关键词搜索：按任意关键词全文检索（东财/财联社）；聚合（hot）会并发拉多个平台，放宽超时。
-  searchItems: async (query: RealtimeNewsSearchQuery): Promise<RealtimeNewsItemListResponse> => {
-    const response = await apiClient.get<Record<string, unknown>>('/api/v1/realtime-news/search', {
-      params: toSearchParams(query),
       timeout: 30000,
     });
     return toCamelCase<RealtimeNewsItemListResponse>(response.data);

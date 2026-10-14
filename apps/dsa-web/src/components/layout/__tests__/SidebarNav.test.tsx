@@ -48,7 +48,7 @@ describe('SidebarNav', () => {
     expect(screen.queryByRole('link', { name: '选股' })).not.toBeInTheDocument();
   });
 
-  it('shows screening directly after chat when Screening is enabled', async () => {
+  it('shows screening directly after the news entry when Screening is enabled', async () => {
     mockGetScreeningStatus.mockResolvedValueOnce({ enabled: true, available: true });
 
     render(
@@ -59,7 +59,7 @@ describe('SidebarNav', () => {
 
     expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
     const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
-    expect(hrefs.slice(0, 7)).toEqual(['/', '/stock-query', '/chat', '/cctv-news', '/realtime-news', '/screening', '/portfolio']);
+    expect(hrefs.slice(0, 6)).toEqual(['/', '/stock-query', '/chat', '/news-analysis', '/screening', '/portfolio']);
   });
 
   it('refreshes the controlled screening entry after config changes', async () => {

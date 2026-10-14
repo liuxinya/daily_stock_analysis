@@ -1,6 +1,6 @@
 # 实时新闻（多平台快讯浏览）
 
-Web 端「实时新闻」页面按平台 tab 切换查看各财经站点的最新快讯。
+Web 端「新闻分析」页（`/news-analysis`）的「实时新闻」tab（默认 tab，`/news-analysis`）按平台 tab 切换查看各财经站点的最新快讯。
 
 与 [CCTV 新闻](cctv-news.md) 和本地资讯池（`NEWS_INTEL_*`）的分工：
 
@@ -19,21 +19,21 @@ Web 端「实时新闻」页面按平台 tab 切换查看各财经站点的最�
 
 页面 tab 顺序即后端 `PLATFORMS` 注册表顺序（`src/services/realtime_news_service.py`）。
 
-| tab | key | 取数方式 | 上游 | 搜索 |
-| --- | --- | --- | --- | --- |
-| 财经热榜 | `hot` | 聚合 | 下列可用且带发布时间的平台 | ✓ |
-| 财联社 | `cls` | 直连财联社 | `/api/cache?name=telegraph`（财联社电报） | ✓ |
-| 同花顺 | `ths` | akshare | `stock_info_global_ths` | — |
-| 东方财富 | `eastmoney` | akshare | `stock_info_global_em` | ✓ |
-| 华尔街见闻 | `wallstreetcn` | NewsNow | `wallstreetcn-quick` | — |
-| 雪球 | `xueqiu` | 直连雪球 | `/statuses/livenews/list.json`（7×24 快讯） | — |
-| 金十数据 | `jin10` | NewsNow | `jin10` | — |
-| 财新 | `caixin` | akshare | `stock_news_main_cx` | — |
-| 新浪财经 | `sina` | akshare | `stock_info_global_sina` | — |
-| 第一财经 | `yicai` | 直连第一财经 | `/api/ajax/getbrieflist`（7×24 快讯） | — |
-| 格隆汇 | `gelonghui` | NewsNow | `gelonghui` | — |
+| tab | key | 取数方式 | 上游 |
+| --- | --- | --- | --- |
+| 财经热榜 | `hot` | 聚合 | 下列可用且带发布时间的平台 |
+| 财联社 | `cls` | 直连财联社 | `/api/cache?name=telegraph`（财联社电报） |
+| 同花顺 | `ths` | akshare | `stock_info_global_ths` |
+| 东方财富 | `eastmoney` | akshare | `stock_info_global_em` |
+| 华尔街见闻 | `wallstreetcn` | NewsNow | `wallstreetcn-quick` |
+| 雪球 | `xueqiu` | 直连雪球 | `/statuses/livenews/list.json`（7×24 快讯） |
+| 金十数据 | `jin10` | NewsNow | `jin10` |
+| 财新 | `caixin` | akshare | `stock_news_main_cx` |
+| 新浪财经 | `sina` | akshare | `stock_info_global_sina` |
+| 第一财经 | `yicai` | 直连第一财经 | `/api/ajax/getbrieflist`（7×24 快讯） |
+| 格隆汇 | `gelonghui` | NewsNow | `gelonghui` |
 
-「搜索」列对应 `/platforms` 返回的 `supports_search`：为 `✓` 的平台支持「按任意关键词全文检索」（见下文[关键词搜索](#关键词搜索)）；其余平台在搜索模式下返回 `available: false` + 空列表（前端展示「不支持关键词搜索」空态，与市场级占位平台一致）。
+每个 tab 只提供该平台的**市场级快讯**（最新一批），页面不提供关键词筛选，只做平台切换与分页。
 
 ### 直连上游的共同约定
 
@@ -163,37 +163,14 @@ Web 端「实时新闻」页面按平台 tab 切换查看各财经站点的最�
 2. **fail-open**：单平台失败只记入响应的 `failed_platforms`，不影响其他平台；前端顶部提示哪些平台没拉到
 3. 先按发布时间倒序，再按标题归一化去重（同一条消息常被多平台同时发，且新浪不给 url），因此同一条消息保留最新的平台版本
 
-## 关键词搜索
-
-页面顶部有一个关键词搜索框，可以填任意内容（股票名、行业、事件、政策等，不限于个股）。**提交关键词后**，各平台 tab 改按该关键词做全文检索；**清空**后回到市场级 feed。在「消息面汇总」tab 搜索会自动切到「财经热榜」聚合，直接看聚合结果。
-
-搜索与市场级 feed（`list_latest`）是两条独立链路（`list_search_news`）：空关键词在后端报 400，不走搜索；缓存键也彼此隔离，互不覆盖。
-
-### 支持搜索的平台与来源
-
-关键词搜索 provider 注册表 `_SEARCH_FETCHERS`，与市场级取数相互独立：
-
-| tab | 搜索来源 | 标签 |
-| --- | --- | --- |
-| 财联社 `cls` | 电报全文搜索 + 深度/研报全文搜索 | 深度条目标 `深度` |
-| 东方财富 `eastmoney` | 全文搜索接口 | 搜索条目标媒体名 |
-| 财经热榜 `hot` | 并发聚合上述两家 | 同上，并按来源平台加来源徽标 |
-
-- **只有带 `supports_search` 的平台能搜**：当前是 `hot` / `cls` / `eastmoney` 三个；同花顺等其余平台只提供市场级快讯、没有全文搜索接口，搜索模式下后端直接返回 `available: false` + 空列表，前端展示「该平台不支持关键词搜索」。
-- **财联社多来源合并**（`_combine_search_sources`）：电报搜索与深度搜索各打一次，按发布时间倒序 + 标题归一化去重；单源失败只降级为少一路结果，两路都失败才判该平台不可用。搜索结果里命中的关键词被上游用 `<em>` 高亮，适配器先剥 `<em>` 再清洗，避免中文正文留下零散空格。
-- **聚合与去重**：`hot` 并发拉 `cls` + `eastmoney`（`_aggregate_search_entries`，`ThreadPoolExecutor`），单源失败只记入 `failed_platforms`（fail-open），再按发布时间倒序 + 标题归一化去重，与市场级「财经热榜」同一套规则。
-- **缓存隔离**：搜索缓存键是 `search:{platform}:{keyword}`，与市场级 `platform.key` 互不覆盖，不同关键词之间也不串。
-- **回显**：搜索响应多一个 `query` 字段回显本次关键词；市场级 `/items` 的 `query` 恒为 `null`。
-
 ## API
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/v1/realtime-news/platforms` | 平台列表；前端 tab 由后端驱动；每项含 `supports_search` |
+| GET | `/api/v1/realtime-news/platforms` | 平台列表；前端 tab 由后端驱动 |
 | GET | `/api/v1/realtime-news/items` | 参数 `platform`（默认 `hot`）、`page`、`page_size`（1-100，默认 20） |
-| GET | `/api/v1/realtime-news/search` | 关键词全文搜索；参数 `q`（必填，最长 64）、`platform`（默认 `hot`）、`page`、`page_size`。响应多 `query` 回显；不支持搜索的平台返回 `available: false` + 空列表 |
 
-错误约定：未知平台或空关键词 400 `validation_error`；上游超时或响应异常 503 `upstream_unavailable`；其他 500 `internal_error`。鉴权由 `/api/v1/*` 的全局中间件覆盖。
+错误约定：未知平台 400 `validation_error`；上游超时或响应异常 503 `upstream_unavailable`；其他 500 `internal_error`。鉴权由 `/api/v1/*` 的全局中间件覆盖。
 
 ## 配置
 
@@ -222,7 +199,5 @@ akshare 接口本身不暴露 timeout，模块内用独立线程兜 deadline，�
    `_fetch_cursor_pages`，只提供「取一页」与「推下一页游标」两个回调（参考雪球 / 第一财经）
 3. 在 `tests/test_realtime_news.py` 里用固定 records 补一个归一化用例；自建 provider 还要在
    HTTP 边界打桩覆盖翻页、鉴权续期与失败降级
-4. 若该平台还支持「关键词全文搜索」，再给它一个 `_SEARCH_FETCHERS` 条目并把注册表里的
-   `supports_search` 置 `True`（见[关键词搜索](#关键词搜索)）；只做市场级 feed 的平台保持默认 `False` 即可
 
-前端不需要改动：tab 列表与 `supports_search` 都由 `/platforms` 接口驱动。
+前端不需要改动：tab 列表由 `/platforms` 接口驱动。

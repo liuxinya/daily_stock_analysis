@@ -3,7 +3,7 @@ import { StrictMode } from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import CctvNewsPage from '../CctvNewsPage';
+import CctvNewsView from '../CctvNewsView';
 import { useCctvAnalysisStore } from '../../stores/cctvAnalysisStore';
 
 /** 把当前地址暴露成文本，用来断言跳转目标与查询串。 */
@@ -199,10 +199,10 @@ beforeEach(() => {
 });
 
 /** 个股表的“问股”“查询”会调 navigate，所以整页都要跑在 Router 里。 */
-const renderPage = (initialEntries: string[] = ['/cctv-news']) => render(
+const renderPage = (initialEntries: string[] = ['/news-analysis?tab=cctv']) => render(
   <MemoryRouter initialEntries={initialEntries}>
     <Routes>
-      <Route path="/cctv-news" element={<CctvNewsPage />} />
+      <Route path="/news-analysis" element={<CctvNewsView />} />
       <Route path="/chat" element={<div>chat-page</div>} />
       <Route path="/stock-query" element={<div>stock-query-page</div>} />
     </Routes>
@@ -210,7 +210,7 @@ const renderPage = (initialEntries: string[] = ['/cctv-news']) => render(
   </MemoryRouter>,
 );
 
-describe('CctvNewsPage', () => {
+describe('CctvNewsView', () => {
   it('auto-syncs the latest days when the news directory is stale', async () => {
     const staleDayList = {
       startDate: '2026-07-29',
@@ -231,7 +231,7 @@ describe('CctvNewsPage', () => {
   });
 
   it('opens the analysis tab when requested by the result notification', async () => {
-    renderPage(['/cctv-news?tab=analysis']);
+    renderPage(['/news-analysis?tab=cctv&ctab=analysis']);
 
     expect(await screen.findByRole('tab', { name: /AI 新闻分析/ })).toHaveAttribute('aria-selected', 'true');
   });
@@ -407,9 +407,9 @@ describe('CctvNewsPage', () => {
   it('releases the syncing state after auto-sync even when StrictMode replays the effect', async () => {
     render(
       <StrictMode>
-        <MemoryRouter initialEntries={['/cctv-news']}>
+        <MemoryRouter initialEntries={['/news-analysis?tab=cctv']}>
           <Routes>
-            <Route path="/cctv-news" element={<CctvNewsPage />} />
+            <Route path="/news-analysis" element={<CctvNewsView />} />
           </Routes>
         </MemoryRouter>
       </StrictMode>,

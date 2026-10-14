@@ -14,8 +14,6 @@ class RealtimeNewsPlatformModel(BaseModel):
     provider: str = ""
     available: bool = True
     has_published_at: bool = True
-    # 是否支持「按任意关键词全文搜索」；为 False 的平台在搜索模式下展示空态
-    supports_search: bool = False
 
 
 class RealtimeNewsPlatformListResponse(BaseModel):
@@ -47,5 +45,3 @@ class RealtimeNewsItemListResponse(BaseModel):
     # 聚合模式下失败的平台 key；单源失败不影响整体返回
     failed_platforms: List[str] = Field(default_factory=list)
     fetched_at: Optional[str] = None
-    # 仅搜索模式下回显：本次使用的搜索关键词（市场级 /items 不返回）
-    query: Optional[str] = None

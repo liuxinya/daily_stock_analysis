@@ -49,7 +49,7 @@ describe('CctvAnalysisNotifier', () => {
 
     screen.getByRole('button', { name: '查看结果' }).click();
     await waitFor(() => {
-      expect(screen.getByTestId('location')).toHaveTextContent('/cctv-news?tab=analysis');
+      expect(screen.getByTestId('location')).toHaveTextContent('/news-analysis?tab=cctv&ctab=analysis');
     });
   });
 

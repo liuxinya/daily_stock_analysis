@@ -19,14 +19,26 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const ChatPage = lazy(() => import('./pages/ChatPage'));
-const CctvNewsPage = lazy(() => import('./pages/CctvNewsPage'));
-const RealtimeNewsPage = lazy(() => import('./pages/RealtimeNewsPage'));
+const NewsAnalysisPage = lazy(() => import('./pages/NewsAnalysisPage'));
 const PortfolioPage = lazy(() => import('./pages/PortfolioPage'));
 const DecisionSignalsPage = lazy(() => import('./pages/DecisionSignalsPage'));
 const AlertsPage = lazy(() => import('./pages/AlertsPage'));
 const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const StockQueryPage = lazy(() => import('./pages/StockQueryPage'));
+
+/**
+ * 旧入口 `/cctv-news` 已并入「新闻分析」页。
+ *
+ * CCTV 的内层子 tab 现在用 `ctab`（外层 `tab` 被实时新闻 / 新闻搜索 / CCTV新闻 占用），
+ * 所以把历史链接里的 `?tab=analysis` 映射成 `?tab=cctv&ctab=analysis`。
+ */
+const LegacyCctvRedirect: React.FC = () => {
+  const location = useLocation();
+  const legacyTab = new URLSearchParams(location.search).get('tab');
+  const ctab = legacyTab === 'analysis' ? '&ctab=analysis' : '';
+  return <Navigate to={`/news-analysis?tab=cctv${ctab}`} replace />;
+};
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -87,8 +99,9 @@ const AppContent: React.FC = () => {
         <Route path="/" element={<HomePage />} />
         <Route path="/stock-query" element={<StockQueryPage />} />
         <Route path="/chat" element={<ChatPage />} />
-        <Route path="/cctv-news" element={<CctvNewsPage />} />
-        <Route path="/realtime-news" element={<RealtimeNewsPage />} />
+        <Route path="/news-analysis" element={<NewsAnalysisPage />} />
+        <Route path="/realtime-news" element={<Navigate to="/news-analysis" replace />} />
+        <Route path="/cctv-news" element={<LegacyCctvRedirect />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/decision-signals" element={<DecisionSignalsPage />} />
         <Route path="/screening" element={<StockScreeningPage />} />

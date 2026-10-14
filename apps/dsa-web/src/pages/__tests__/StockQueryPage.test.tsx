@@ -14,19 +14,24 @@ vi.mock('../../api/stocks', () => ({
   stocksApi: { getQuote },
 }));
 
-vi.mock('../../api/baiduFinance', () => ({
-  baiduFinanceApi: {
-    kline,
-    fundFlow,
-    company: vi.fn(),
-    talks: vi.fn(),
-    sentiment: vi.fn(),
-    finance: vi.fn(),
-    mainOperation: vi.fn(),
-    analysis: vi.fn(),
-  },
-  parseMarketData: () => [],
-}));
+vi.mock('../../api/baiduFinance', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/baiduFinance')>();
+  return {
+    // isEtfCode 是纯函数，保留真实实现；只打桩网络方法。
+    isEtfCode: actual.isEtfCode,
+    parseMarketData: () => [],
+    baiduFinanceApi: {
+      kline,
+      fundFlow,
+      company: vi.fn(),
+      talks: vi.fn(),
+      sentiment: vi.fn(),
+      finance: vi.fn(),
+      mainOperation: vi.fn(),
+      analysis: vi.fn(),
+    },
+  };
+});
 
 const renderAt = (entry: string) => {
   const router = createMemoryRouter([{ path: '/stock-query', element: <StockQueryPage /> }], {

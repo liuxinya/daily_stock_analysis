@@ -1,6 +1,6 @@
 # CCTV 新闻联播文字稿与 AI 分析
 
-Web 端「CCTV 新闻」页面（`/cctv-news`）提供两件事：按天浏览近一个月的《新闻联播》文字稿，以及基于用户选定时间窗口内文字稿原文的 AI 政策与产业解读。首次进入页面会先检测目录是否落后于当前日期；没有新闻或最新日期缺失时自动同步最近两天，用户无需每天手动点击同步。
+Web 端「新闻分析」页（`/news-analysis`）的「CCTV新闻」tab（`/news-analysis?tab=cctv`）提供两件事：按天浏览近一个月的《新闻联播》文字稿，以及基于用户选定时间窗口内文字稿原文的 AI 政策与产业解读。首次进入页面会先检测目录是否落后于当前日期；没有新闻或最新日期缺失时自动同步最近两天，用户无需每天手动点击同步。
 
 ## 能力范围
 
@@ -155,10 +155,10 @@ CCTV_NEWS_LLM_REDACT_TERMS=
 | 输出契约 | `src/schemas/cctv_news_analysis.py` |
 | 数据访问 | `src/repositories/cctv_news_repo.py` |
 | API | `api/v1/endpoints/cctv_news.py`、`api/v1/schemas/cctv_news.py` |
-| 前端页面 | `apps/dsa-web/src/pages/CctvNewsPage.tsx`、`apps/dsa-web/src/components/cctv-news/` |
+| 前端页面 | `apps/dsa-web/src/pages/CctvNewsView.tsx`（由 `NewsAnalysisPage.tsx` 作为 tab 挂载）、`apps/dsa-web/src/components/cctv-news/` |
 | 前端跨路由任务 store | `apps/dsa-web/src/stores/cctvAnalysisStore.ts` |
 | 跳转问股的文案与参数校验 | `apps/dsa-web/src/utils/chatFollowUp.ts` |
-| 测试 | `tests/test_cctv_news.py`、`apps/dsa-web/src/pages/__tests__/CctvNewsPage.test.tsx`、`apps/dsa-web/src/components/cctv-news/__tests__/` |
+| 测试 | `tests/test_cctv_news.py`、`apps/dsa-web/src/pages/__tests__/CctvNewsView.test.tsx`、`apps/dsa-web/src/components/cctv-news/__tests__/` |
 
 ## 使用注意
 
