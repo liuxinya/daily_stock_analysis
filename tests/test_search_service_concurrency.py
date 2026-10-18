@@ -32,6 +32,31 @@ def _hang_topic_news_process_worker(*_args):
     time.sleep(10)
 
 
+def _providerless_topic_news_process_worker(
+    conn, constructor_kwargs, topic, max_results, focus_keywords
+):
+    """子进程侧替身：强制走「一个搜索渠道都没有」的分支。
+
+    fresh clone 现在会自带免 Key 的站内新闻搜索，子进程会真的去打上游；这里把 provider
+    清空，既保留「无渠道时返回 provider='None' 的序列化响应」这条断言，又不让测试联网。
+    """
+    service = SearchService(**constructor_kwargs)
+    service._providers = []
+    try:
+        conn.send((
+            True,
+            service.search_topic_news(
+                topic,
+                max_results=max_results,
+                focus_keywords=focus_keywords,
+            ),
+        ))
+    except BaseException as exc:
+        conn.send((False, exc))
+    finally:
+        conn.close()
+
+
 class _ThreadUnsafeCycle:
     def __init__(self, values):
         self._values = list(values)
@@ -352,7 +377,10 @@ class SearchServiceConcurrencyTestCase(unittest.TestCase):
 
         def wait_for_owner(_key, _event, *, timeout_seconds):
             self.assertGreater(timeout_seconds, 0)
-            self.assertLessEqual(timeout_seconds, 0.2)
+            # deadline 是 monotonic()+0.2 算出来的，两次单调钟读数若落在同一个 tick 上，
+            # 相减会带上一个浮点尾数（本机实测 0.2000000000007276）。这是既有实现的
+            # 特性，不是竞态，留一个极小的容差即可。
+            self.assertLessEqual(timeout_seconds, 0.2 + 1e-9)
             time.sleep(0.03)
             return None
 
@@ -398,17 +426,21 @@ class SearchServiceConcurrencyTestCase(unittest.TestCase):
         self.assertEqual(active_search_children, [])
 
     def test_bounded_topic_search_process_returns_serialized_dsa_response(self):
-        response = _call_topic_news_in_subprocess(
-            constructor_kwargs={
-                "searxng_public_instances_enabled": False,
-                "news_max_age_days": 3,
-                "news_strategy_profile": "short",
-            },
-            topic="影视传媒",
-            max_results=2,
-            focus_keywords=None,
-            timeout_seconds=5.0,
-        )
+        with patch(
+            "src.search_service._search_topic_news_process_worker",
+            _providerless_topic_news_process_worker,
+        ):
+            response = _call_topic_news_in_subprocess(
+                constructor_kwargs={
+                    "searxng_public_instances_enabled": False,
+                    "news_max_age_days": 3,
+                    "news_strategy_profile": "short",
+                },
+                topic="影视传媒",
+                max_results=2,
+                focus_keywords=None,
+                timeout_seconds=5.0,
+            )
 
         self.assertFalse(response.success)
         self.assertEqual(response.provider, "None")

@@ -392,6 +392,43 @@ class MarketBriefAnalysis(Base):
     )
 
 
+class IndustryFundsSnapshot(Base):
+    """「行业资金」页面每次刷新落库的一份完整快照。
+
+    除了给页面读缓存，这张表还承担两个**历史积累**职责：
+
+    - ``etf_delta`` 是宽基 ETF 份额的 5 日净增（单位：份）。深交所接口不提供历史
+      快照，ETF 份额变动的历史分位只能靠本地按日累积，攒够
+      ``ETF_DELTA_PERCENTILE_MIN_POINTS`` 期后打分会自动从"固定标尺"切到历史分位。
+    - ``score`` / 各因子原始值留下来供后续做信号复盘，不必重新抓上游。
+
+    ``trade_date`` 是**数据本身所属的交易日**（不是抓取时刻），同一天重复刷新时
+    按它去重覆盖，避免周末连着点刷新攒出一堆同一天的记录把分位样本带偏。
+    """
+
+    __tablename__ = 'industry_funds_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String(16), nullable=False, index=True)
+    score = Column(Float)
+    verdict = Column(String(16))
+    # 宽基 ETF 5 日份额净增（份）。ETF 份额因子的历史分位就靠这一列累积。
+    etf_delta = Column(Float)
+    lhb_rolling_5d = Column(Float)
+    margin_balance = Column(Float)
+    valuation_percentile = Column(Float)
+    model = Column(String(120))
+    provider = Column(String(64))
+    degraded = Column(Boolean, default=False)
+    payload = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_industry_funds_trade_date', 'trade_date'),
+        Index('ix_industry_funds_created', 'created_at'),
+    )
+
+
 class FundamentalSnapshot(Base):
     """
     基本面上下文快照（P0 write-only）。

@@ -15,7 +15,7 @@ if "newspaper" not in sys.modules:
     mock_np.Config = MagicMock()
     sys.modules["newspaper"] = mock_np
 
-from src.search_service import SearchService, SearXNGSearchProvider
+from src.search_service import SearchService, SearXNGSearchProvider, SiteNewsSearchProvider
 
 
 class TestSearXNGSearchProvider(unittest.TestCase):
@@ -444,7 +444,8 @@ class TestSearXNGSearchProvider(unittest.TestCase):
     def test_search_service_does_not_add_public_searxng_provider_by_default(self):
         service = SearchService()
 
-        self.assertFalse(service.is_available)
+        # 默认只会有免 Key 的站内新闻兜底，不会有任何要联网发现实例的 SearXNG
+        self.assertEqual([SiteNewsSearchProvider], [type(p) for p in service._providers])
         self.assertFalse(any(provider.name == "SearXNG" for provider in service._providers))
         self.assertFalse(service._constructor_kwargs["searxng_public_instances_enabled"])
 

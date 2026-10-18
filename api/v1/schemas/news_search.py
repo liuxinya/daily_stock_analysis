@@ -37,9 +37,19 @@ class NewsSearchItemListResponse(BaseModel):
     # 本次使用的搜索关键词（回显，便于前端丢弃迟到响应）
     query: str = ""
     # 生效的时间窗（天）
-    window_days: int = 2
+    window_days: int = 7
     items: List[NewsSearchItemModel] = Field(default_factory=list)
     total: int = 0
     # 为凑满时间窗向上游翻了几页
     pages_scanned: int = 0
     fetched_at: Optional[str] = None
+
+
+class NewsSearchAggregateResponse(NewsSearchItemListResponse):
+    """全平台聚合搜索的响应。
+
+    比单平台多一个 ``failed_platforms``（平台 key）。聚合是 fail-open 的：某个平台超时或
+    上游异常只会出现在这里，不影响其余平台的结果，因此这个接口不会因为上游问题返回 503。
+    """
+
+    failed_platforms: List[str] = Field(default_factory=list)

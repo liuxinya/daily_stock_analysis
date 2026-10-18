@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, CandlestickChart, Gauge, Home, LogOut, MessageSquareQuote, Radio, Search, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, CandlestickChart, Gauge, Home, Landmark, LogOut, MessageSquareQuote, Radio, Search, Settings2 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
+import { industryFundsApi } from '../../api/industryFunds';
 import { SCREENING_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, screeningApi } from '../../api/screening';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
@@ -33,6 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'chat', labelKey: 'layout.nav.chat', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
   { key: 'news-analysis', labelKey: 'layout.nav.newsAnalysis', to: '/news-analysis', icon: Radio },
   { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
+  { key: 'industry-funds', labelKey: 'layout.nav.industryFunds', to: '/industry-funds', icon: Landmark },
   { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
   { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
@@ -47,6 +49,9 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showScreeningNav, setShowScreeningNav] = useState(false);
+  // 行业资金默认开启，所以这里的初值是 true 而不是 false：状态接口偶发失败时
+  // 菜单不该凭空消失（选股那个是默认关闭的功能，语义相反）。
+  const [showIndustryFundsNav, setShowIndustryFundsNav] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -64,18 +69,36 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
       }
     };
 
+    const refreshIndustryFundsStatus = async () => {
+      try {
+        const status = await industryFundsApi.getStatus();
+        if (active) {
+          setShowIndustryFundsNav(status.enabled);
+        }
+      } catch {
+        // 保持上一次的状态，不因为一次请求失败就把入口藏掉。
+      }
+    };
+
     void refreshScreeningStatus();
+    void refreshIndustryFundsStatus();
     window.addEventListener(SCREENING_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
     window.addEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
+    window.addEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshIndustryFundsStatus);
 
     return () => {
       active = false;
       window.removeEventListener(SCREENING_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
       window.removeEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshScreeningStatus);
+      window.removeEventListener(SYSTEM_CONFIG_CHANGED_EVENT, refreshIndustryFundsStatus);
     };
   }, []);
 
-  const navItems = showScreeningNav ? NAV_ITEMS : NAV_ITEMS.filter((item) => item.key !== 'screening');
+  const navItems = NAV_ITEMS.filter((item) => {
+    if (item.key === 'screening') return showScreeningNav;
+    if (item.key === 'industry-funds') return showIndustryFundsNav;
+    return true;
+  });
   const isRail = variant === 'rail';
   const itemBaseClass = cn(
     'group relative flex h-[var(--nav-item-height)] w-full items-center overflow-hidden rounded-2xl border border-transparent text-sm leading-none text-secondary-text transition-all',

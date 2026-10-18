@@ -1029,6 +1029,20 @@ class Config:
     market_brief_closed_time: str = "09:30"  # 周末/节假日汇总的生成时点
     market_brief_retention_days: int = 30  # 汇总结果保留天数
 
+    # === 行业资金（主力资金 / 现阶段方向）配置 ===
+    # 五因子复合信号：行业资金流、龙虎榜机构净买、ETF 份额变动、两融余额、估值分位。
+    # 全部多源交叉验证，单个数据源失败不阻断整页，降级原因如实透传到前端。
+    industry_funds_enabled: bool = True  # 是否启用行业资金页面与接口
+    industry_funds_refresh_cooldown_sec: int = 60  # 两次刷新之间的最小间隔（秒）；上游接口按频率风控
+    industry_funds_cache_ttl_minutes: int = 30  # 缓存视为"新鲜"的时长（分钟）；过期只提示不自动重抓
+    industry_funds_fetch_timeout_sec: int = 30  # 单个上游数据源的抓取超时（秒）
+    industry_funds_total_timeout_sec: int = 240  # 单次刷新全部数据源的总预算（秒）
+    industry_funds_llm_timeout_sec: int = 120  # 单次模型调用超时（秒）；底层 litellm 不暴露 timeout，必须自己兜
+    industry_funds_reasoning_effort: str = "low"  # 推理强度：low/high/max；不限会让推理型模型把输出预算烧在思考上
+    industry_funds_candidate_limit: int = 20  # 关注个股候选池上限（只）
+    industry_funds_retention_days: int = 90  # 快照保留天数；本地 ETF 份额基线与历史分位都靠它累积
+    industry_funds_push_enabled: bool = False  # 是否允许把页面结论推送到已配置的通知渠道
+
     # === 股票查询（百度财经代理）acs-token 配置 ===
     # 百度财经 /vapi/v1/* 接口（资金 / 分析）需要 acs-token 请求头，缺失即 403 风控。
     # token 由浏览器混淆 JS 生成：桌面端由 Electron 隐藏窗口推入，服务器端由
@@ -2070,6 +2084,39 @@ class Config:
                 os.getenv('MARKET_BRIEF_RETENTION_DAYS'), 30,
                 field_name='MARKET_BRIEF_RETENTION_DAYS', minimum=3, maximum=365,
             ),
+            industry_funds_enabled=parse_env_bool(os.getenv('INDUSTRY_FUNDS_ENABLED'), True),
+            industry_funds_refresh_cooldown_sec=parse_env_int(
+                os.getenv('INDUSTRY_FUNDS_REFRESH_COOLDOWN_SEC'), 60,
+                field_name='INDUSTRY_FUNDS_REFRESH_COOLDOWN_SEC', minimum=0, maximum=3600,
+            ),
+            industry_funds_cache_ttl_minutes=parse_env_int(
+                os.getenv('INDUSTRY_FUNDS_CACHE_TTL_MINUTES'), 30,
+                field_name='INDUSTRY_FUNDS_CACHE_TTL_MINUTES', minimum=1, maximum=1440,
+            ),
+            industry_funds_fetch_timeout_sec=parse_env_int(
+                os.getenv('INDUSTRY_FUNDS_FETCH_TIMEOUT_SEC'), 30,
+                field_name='INDUSTRY_FUNDS_FETCH_TIMEOUT_SEC', minimum=5, maximum=120,
+            ),
+            industry_funds_total_timeout_sec=parse_env_int(
+                os.getenv('INDUSTRY_FUNDS_TOTAL_TIMEOUT_SEC'), 240,
+                field_name='INDUSTRY_FUNDS_TOTAL_TIMEOUT_SEC', minimum=30, maximum=900,
+            ),
+            industry_funds_llm_timeout_sec=parse_env_int(
+                os.getenv('INDUSTRY_FUNDS_LLM_TIMEOUT_SEC'), 120,
+                field_name='INDUSTRY_FUNDS_LLM_TIMEOUT_SEC', minimum=10, maximum=600,
+            ),
+            industry_funds_reasoning_effort=(
+                (os.getenv('INDUSTRY_FUNDS_REASONING_EFFORT') or '').strip().lower() or 'low'
+            ),
+            industry_funds_candidate_limit=parse_env_int(
+                os.getenv('INDUSTRY_FUNDS_CANDIDATE_LIMIT'), 20,
+                field_name='INDUSTRY_FUNDS_CANDIDATE_LIMIT', minimum=5, maximum=100,
+            ),
+            industry_funds_retention_days=parse_env_int(
+                os.getenv('INDUSTRY_FUNDS_RETENTION_DAYS'), 90,
+                field_name='INDUSTRY_FUNDS_RETENTION_DAYS', minimum=7, maximum=730,
+            ),
+            industry_funds_push_enabled=parse_env_bool(os.getenv('INDUSTRY_FUNDS_PUSH_ENABLED'), False),
             baidu_finance_token_enabled=parse_env_bool(os.getenv('BAIDU_FINANCE_TOKEN_ENABLED'), True),
             baidu_finance_token_ttl_sec=parse_env_int(
                 os.getenv('BAIDU_FINANCE_TOKEN_TTL_SEC'), 90,

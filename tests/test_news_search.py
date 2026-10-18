@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import time
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -263,6 +264,128 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(len(result["items"]), 3)
 
 
+class AggregateSearchTest(unittest.TestCase):
+    """``search_all``：并发打全部平台后合并，单平台失败不影响整体。"""
+
+    def setUp(self) -> None:
+        self.service = NewsSearchService()
+
+    def _fetchers(self, per_platform):
+        """per_platform: {platform_key: entries} 或 {platform_key: Exception}。
+
+        未列出的平台一律补成「返回空页」的假 fetcher——聚合会把 5 家全打一遍，
+        漏掉任何一个都会落到真 fetcher 上打网络。
+        """
+
+        def make(value):
+            def fetch(_keyword, _cursor, *, timeout):
+                if isinstance(value, Exception):
+                    raise value
+                return value, None
+
+            return fetch
+
+        return {
+            platform.key: make(per_platform.get(platform.key, []))
+            for platform in news_search_service.PLATFORMS
+        }
+
+    def _search_all(self, per_platform, **kwargs):
+        with patch.dict(news_search_service._PAGE_FETCHERS, self._fetchers(per_platform)):
+            return self.service.search_all(keyword=kwargs.pop("keyword", "比亚迪"), **kwargs)
+
+    def test_merges_all_platforms_and_sorts_by_time(self) -> None:
+        result = self._search_all({
+            "cls": [_entry("比亚迪快讯", minutes_ago=30)],
+            "eastmoney": [_entry("比亚迪获机构调研", minutes_ago=10,
+                                 platform="eastmoney", label="东方财富")],
+            "ths": [],
+            "wallstreetcn": [],
+            "jin10": [],
+        })
+
+        self.assertEqual([item["title"] for item in result["items"]],
+                         ["比亚迪获机构调研", "比亚迪快讯"])
+        self.assertEqual(result["platform"], "all")
+        self.assertEqual(result["platform_label"], "全部平台")
+        self.assertEqual(result["failed_platforms"], [])
+
+    def test_same_title_across_platforms_is_deduped(self) -> None:
+        result = self._search_all({
+            "cls": [_entry("比亚迪集体声明", minutes_ago=30, url="a")],
+            "eastmoney": [_entry("比亚迪集体声明！", minutes_ago=20, url="b",
+                                 platform="eastmoney", label="东方财富")],
+        })
+
+        # 先按时间倒序再按标题去重，所以留下的是较新的那条（东财的 b）
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["url"], "b")
+        self.assertEqual(result["total"], 1)
+
+    def test_limit_truncates_the_merged_result(self) -> None:
+        result = self._search_all({
+            "cls": [_entry(f"比亚迪{i}", minutes_ago=i) for i in range(1, 5)],
+            "eastmoney": [_entry("比亚迪机构调研", minutes_ago=9,
+                                 platform="eastmoney", label="东方财富")],
+        }, limit=2)
+
+        self.assertEqual(len(result["items"]), 2)
+        self.assertEqual(result["total"], 2)
+
+    def test_pages_scanned_is_summed_across_platforms(self) -> None:
+        result = self._search_all({
+            "cls": [_entry("比亚迪快讯", minutes_ago=30)],
+            "ths": [_entry("比亚迪公告", minutes_ago=20, platform="ths", label="同花顺-问财")],
+        })
+
+        # 两个平台各翻一页，其余平台返回空列表也算各翻一页
+        self.assertEqual(result["pages_scanned"], 5)
+
+    def test_single_platform_failure_is_isolated(self) -> None:
+        result = self._search_all({
+            "cls": [_entry("比亚迪快讯", minutes_ago=30)],
+            "jin10": NewsSearchUpstreamError("金十数据搜索失败: timeout"),
+        })
+
+        self.assertEqual(result["failed_platforms"], ["jin10"])
+        self.assertEqual([item["title"] for item in result["items"]], ["比亚迪快讯"])
+
+    def test_all_platforms_failing_still_returns_a_fail_open_response(self) -> None:
+        result = self._search_all({
+            key: NewsSearchUpstreamError("upstream boom") for key in
+            ("cls", "ths", "eastmoney", "wallstreetcn", "jin10")
+        })
+
+        self.assertEqual(result["items"], [])
+        self.assertEqual(sorted(result["failed_platforms"]),
+                         ["cls", "eastmoney", "jin10", "ths", "wallstreetcn"])
+
+    def test_budget_sec_bounds_the_wait_and_marks_slow_platforms_failed(self) -> None:
+        """预算耗尽时不等掉队线程：慢平台记失败，已拿到的结果照常返回。"""
+        def slow(_keyword, _cursor, *, timeout):
+            time.sleep(0.5)
+            return [_entry("比亚迪慢速快讯", minutes_ago=15)], None
+
+        fetchers = self._fetchers({"cls": slow})
+        started = time.monotonic()
+        with patch.dict(news_search_service._PAGE_FETCHERS, fetchers):
+            result = self.service.search_all(keyword="比亚迪", budget_sec=0.05)
+        elapsed = time.monotonic() - started
+
+        self.assertIn("cls", result["failed_platforms"])
+        # 其余平台是瞬时返回的假 fetcher，不该被慢平台拖住
+        self.assertLess(elapsed, 1.0)
+
+    def test_empty_keyword_is_rejected(self) -> None:
+        with self.assertRaises(NewsSearchServiceError):
+            self.service.search_all(keyword="   ")
+
+    def test_limit_is_clamped_to_max(self) -> None:
+        with patch.object(NewsSearchService, "_collect", return_value=([], 1)) as collect:
+            self.service.search_all(keyword="比亚迪", limit=9999)
+        self.assertEqual(collect.call_args.kwargs["limit"], news_search_service._MAX_LIMIT)
+
+
 class ServiceValidationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.service = NewsSearchService()
@@ -309,6 +432,33 @@ class EndpointMappingTest(unittest.TestCase):
         response = news_search_endpoint.list_platforms()
         self.assertEqual(response.total, 5)
         self.assertEqual(response.default_platform, "cls")
+
+    def test_aggregate_service_error_maps_to_400(self) -> None:
+        with patch.object(news_search_service.NewsSearchService, "search_all",
+                          side_effect=NewsSearchServiceError("搜索关键词不能为空")):
+            with self.assertRaises(HTTPException) as ctx:
+                news_search_endpoint.search_all_items(q="x", days=7, limit=50)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_aggregate_surfaces_failed_platforms_instead_of_503(self) -> None:
+        payload = {
+            "platform": "all",
+            "platform_label": "全部平台",
+            "query": "比亚迪",
+            "window_days": 7,
+            "items": [],
+            "total": 0,
+            "pages_scanned": 5,
+            "failed_platforms": ["jin10"],
+            "fetched_at": "2026-10-18T15:19:00+08:00",
+        }
+        with patch.object(news_search_service.NewsSearchService, "search_all", return_value=payload):
+            response = news_search_endpoint.search_all_items(q="比亚迪", days=7, limit=50)
+
+        self.assertEqual(response.failed_platforms, ["jin10"])
+        self.assertEqual(response.platform, "all")
+        self.assertEqual(response.window_days, 7)
+
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { historyApi } from '../../../api/history';
+import { newsSearchApi } from '../../../api/newsSearch';
 import type {
   AnalysisContextPackOverview,
   AnalysisReport,
@@ -14,6 +14,13 @@ vi.mock('../../../api/history', () => ({
   historyApi: {
     getDiagnostics: vi.fn(),
     getNews: vi.fn(),
+  },
+}));
+
+// 资讯区已改为走新闻搜索的全平台聚合接口，不再按记录取「报告页补充资讯」。
+vi.mock('../../../api/newsSearch', () => ({
+  newsSearchApi: {
+    searchAll: vi.fn(),
   },
 }));
 
@@ -402,9 +409,16 @@ describe('ReportSummary analysis context placement', () => {
   });
 
   it('renders strategy and news before context, diagnostics and traceability', async () => {
-    vi.mocked(historyApi.getNews).mockResolvedValue({
-      total: 0,
+    vi.mocked(newsSearchApi.searchAll).mockResolvedValue({
+      platform: 'all',
+      platformLabel: '全部平台',
+      query: '贵州茅台',
+      windowDays: 7,
       items: [],
+      total: 0,
+      pagesScanned: 5,
+      fetchedAt: '2026-04-10T12:00:00+08:00',
+      failedPlatforms: [],
     });
 
     const report: AnalysisReport = {

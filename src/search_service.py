@@ -44,10 +44,20 @@ from src.data.stock_mapping import (
     foreign_stock_english_aliases,
 )
 from src.services.run_diagnostics import record_provider_run, record_provider_run_started
+from src.services.news_search_service import NewsSearchService
+from src.services.news_search_service import PLATFORMS as SITE_NEWS_PLATFORMS
 
 logger = logging.getLogger(__name__)
 
 _SEARCH_TIMEOUT_PROCESS_START_METHOD = "spawn"
+
+# 免 Key 的站内新闻搜索 provider。见 SiteNewsSearchProvider。
+_SITE_NEWS_PROVIDER_NAME = "站内新闻搜索"
+# 站内搜索是关键词检索，只声明能服务「最新消息」这一个维度。
+_SITE_NEWS_DIMENSION = "latest_news"
+# 分析链路是同步的，等不起页面聚合的 30s；站点第一页通常在 1~3s 内返回，
+# 这个预算只在某家站点挂死时兜底。
+_ANALYSIS_SITE_NEWS_BUDGET_SEC = 10.0
 _SEARCH_TIMEOUT_PROCESS_JOIN_GRACE_SECONDS = 1.0
 _SEARCH_TIMEOUT_WORKER_SLOTS = threading.BoundedSemaphore(4)
 
@@ -281,11 +291,16 @@ class SearchResponse:
 
 class BaseSearchProvider(ABC):
     """搜索引擎基类"""
-    
+
+    # 该 provider 能服务的维度名（``search_comprehensive_intel`` 的 ``dim['name']``）；
+    # None 表示不限，即所有维度都能服务——现有付费渠道都是这样的通用检索。
+    # 免 Key 的站内新闻搜索是纯关键词检索，只能覆盖「最新消息」，见 SiteNewsSearchProvider。
+    served_dimensions: Optional[frozenset] = None
+
     def __init__(self, api_keys: List[str], name: str):
         """
         初始化搜索引擎
-        
+
         Args:
             api_keys: API Key 列表（支持多个 key 负载均衡）
             name: 搜索引擎名称
@@ -296,6 +311,10 @@ class BaseSearchProvider(ABC):
         self._key_usage: Dict[str, int] = {key: 0 for key in api_keys}
         self._key_errors: Dict[str, int] = {key: 0 for key in api_keys}
         self._state_lock = threading.RLock()
+
+    def serves(self, dimension: str) -> bool:
+        """本 provider 是否能服务该情报维度。"""
+        return self.served_dimensions is None or dimension in self.served_dimensions
     
     @property
     def name(self) -> str:
@@ -407,6 +426,149 @@ class BaseSearchProvider(ABC):
             SearchResponse 对象
         """
         return self._execute_search(query, max_results=max_results, days=days)
+
+
+class SiteNewsSearchProvider(BaseSearchProvider):
+    """免 Key 的财经站点站内搜索（财联社 / 同花顺-问财 / 东方财富 / 华尔街见闻 / 金十数据）。
+
+    存在的意义是让「没有配置任何付费搜索渠道」的用户也能有新闻面证据：付费渠道全无时
+    ``SearchService.is_available`` 原本为 False，主流程会整段跳过情报检索、Agent 工具
+    直接返回「No search engine available」，报告只能挂「未配置搜索渠道」。
+
+    与付费渠道的三处不同：
+
+    1. **不需要 API Key**，因此重写 ``is_available`` 恒为 True，并绕开基类的 key 轮询
+       与 ``_execute_search``（那条路径没 key 会直接判失败）。
+    2. **只能在关键词上做检索**，所以 ``served_dimensions`` 只声明 ``latest_news``：
+       「风险排查 / 业绩预期 / 机构分析 / 行业分析 / 公告」需要语义检索，拿站内关键词
+       搜索硬凑会把普通新闻冒充成公告或研报，宁可让这些维度留空。
+    3. **总预算更短**：分析是同步链路，等不起页面聚合的 30s，见
+       ``_ANALYSIS_SITE_NEWS_BUDGET_SEC``。
+    """
+
+    served_dimensions: Optional[frozenset] = frozenset({_SITE_NEWS_DIMENSION})
+
+    def __init__(self, name: str = _SITE_NEWS_PROVIDER_NAME):
+        super().__init__([], name)
+
+    @property
+    def is_available(self) -> bool:
+        """免 Key 渠道恒可用。"""
+        return True
+
+    @staticmethod
+    def _resolve_keyword(query: str, keyword: Optional[str]) -> str:
+        """确定站内搜索的关键词。
+
+        ``_matches_keyword`` 要求关键词在标题/摘要/来源里**字面命中**，所以不能把整条
+        查询串（如「中科曙光 603019 最新 新闻 重大 事件」）打给站点。调用方知道股票时
+        应显式传 ``keyword``；没有传时回退到查询串的第一个空白分隔 token——两个查询
+        构造器都把股票名放在首位，因此回退值就是股票名。
+        """
+        explicit = (keyword or "").strip()
+        if explicit:
+            return explicit
+        for token in (query or "").split():
+            cleaned = token.strip()
+            if cleaned:
+                return cleaned
+        return ""
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        days: int = 7,
+        *,
+        keyword: Optional[str] = None,
+    ) -> SearchResponse:
+        """按关键词打各站点搜索接口，归一化成 ``SearchResponse``。"""
+        resolved = self._resolve_keyword(query, keyword)
+        if not resolved:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self._name,
+                success=False,
+                error_message=f"{self._name} 无可用的搜索关键词",
+            )
+
+        started_at = time.time()
+        try:
+            payload = self._news_search().search_all(
+                keyword=resolved,
+                days=days,
+                limit=max_results,
+                budget_sec=_ANALYSIS_SITE_NEWS_BUDGET_SEC,
+            )
+        except Exception as exc:
+            logger.error(f"[{self._name}] 搜索 '{resolved}' 失败: {exc}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self._name,
+                success=False,
+                error_message=str(exc),
+                search_time=time.time() - started_at,
+            )
+
+        failed_platforms = list(payload.get("failed_platforms") or [])
+        results = [self._to_search_result(item) for item in (payload.get("items") or [])]
+        # 全线失败才算失败：只要有一家站点返回过条目，本次检索就确实执行了。
+        # 判成失败会让「搜过但一条没拿到」被记成 0 而不是 None，这是我们要的语义。
+        all_failed = bool(failed_platforms) and len(failed_platforms) >= len(SITE_NEWS_PLATFORMS)
+        response = SearchResponse(
+            query=query,
+            results=results,
+            provider=self._name,
+            success=not all_failed,
+            search_time=time.time() - started_at,
+        )
+        if all_failed:
+            response.error_message = f"{self._name} 全部站点检索失败"
+        if failed_platforms:
+            logger.warning(
+                "[%s] '%s' 有 %s 个站点未返回结果: %s",
+                self._name,
+                resolved,
+                len(failed_platforms),
+                ", ".join(failed_platforms),
+            )
+        return response
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+        **search_kwargs: Any,
+    ) -> SearchResponse:
+        """基类抽象方法。
+
+        免 Key 检索不走 ``_execute_search``，这里只做转发，避免基类契约被误用成
+        「有 api_key 才搜」。
+        """
+        return self.search(query, max_results, days=days, **search_kwargs)
+
+    @staticmethod
+    def _news_search() -> NewsSearchService:
+        return NewsSearchService()
+
+    @staticmethod
+    def _to_search_result(item: Dict[str, Any]) -> SearchResult:
+        """站点条目 -> ``SearchResult``。
+
+        ``published_at`` 是带时区偏移的 ISO8601，下游 ``_normalize_news_publish_date``
+        能直接解析并换算成本地日期，不需要在这里改格式。
+        """
+        return SearchResult(
+            title=str(item.get("title") or ""),
+            snippet=str(item.get("summary") or ""),
+            url=str(item.get("url") or ""),
+            source=str(item.get("platform_label") or item.get("platform") or ""),
+            published_date=item.get("published_at") or None,
+        )
 
 
 class TavilySearchProvider(BaseSearchProvider):
@@ -2480,9 +2642,14 @@ class SearchService:
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
-            
+
+        # 8. 站内新闻搜索（免 Key 兜底）
+        # 只在「一个渠道都没有」时注册：它存在的意义是让没配 key 的用户也有新闻面证据，
+        # 而不是给已经配了付费渠道的用户每次分析多打 5 家站点、并把两套来源混在一起。
+        # 付费渠道检索质量更高，一旦可用就不该被这条兜底路径分走请求。
         if not self._providers:
-            logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
+            self._providers.append(SiteNewsSearchProvider())
+            logger.info("未配置任何付费搜索渠道，启用免 Key 的站内新闻搜索作为兜底")
 
         # In-memory search result cache: {cache_key: (timestamp, SearchResponse)}
         self._cache: Dict[str, Tuple[float, 'SearchResponse']] = {}
@@ -4113,6 +4280,13 @@ class SearchService:
                             prefer_chinese=prefer_chinese,
                         )
                     )
+                elif isinstance(provider, SiteNewsSearchProvider):
+                    # 站内搜索按关键词字面命中做过滤，必须传短关键词而不是整条查询串。
+                    # 有 focus_keywords 时优先用它（调用方已经指好了关注点），否则用股票名：
+                    # 财经站点是按公司名收录新闻的，拿纯数字代码去搜命中率极低。
+                    search_kwargs["keyword"] = (
+                        focus_keywords[0] if focus_keywords else stock_name
+                    )
 
                 started_at = time.monotonic()
                 try:
@@ -4517,8 +4691,15 @@ class SearchService:
             available_providers = [p for p in self._providers if p.is_available]
             if not available_providers:
                 break
-            
-            provider = available_providers[provider_index % len(available_providers)]
+
+            # 只考虑声明能服务本维度的 provider：站内新闻搜索是关键词检索，
+            # 只覆盖「最新消息」，派它去做「风险排查 / 业绩预期 / 公告」等于拿关键词
+            # 检索冒充语义检索。这里跳过该维度而不是 break——后面的维度还要继续跑。
+            eligible_providers = [p for p in available_providers if p.serves(dim['name'])]
+            if not eligible_providers:
+                continue
+
+            provider = eligible_providers[provider_index % len(eligible_providers)]
             provider_index += 1
             
             request_days = (
@@ -4534,19 +4715,20 @@ class SearchService:
                 request_days,
             )
 
+            search_kwargs: Dict[str, Any] = {}
             if isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
-                response = provider.search(
-                    dim['query'],
-                    max_results=provider_max_results,
-                    days=request_days,
-                    topic=dim['tavily_topic'],
-                )
-            else:
-                response = provider.search(
-                    dim['query'],
-                    max_results=provider_max_results,
-                    days=request_days,
-                )
+                search_kwargs['topic'] = dim['tavily_topic']
+            elif isinstance(provider, SiteNewsSearchProvider):
+                # 站内搜索是关键词检索，拿整条维度查询串去打站点会一条都命中不了
+                # （后端按关键词字面过滤），所以显式把股票名传下去。
+                search_kwargs['keyword'] = stock_name
+
+            response = provider.search(
+                dim['query'],
+                max_results=provider_max_results,
+                days=request_days,
+                **search_kwargs,
+            )
             if dim['strict_freshness']:
                 filtered_response = self._filter_news_response(
                     response,

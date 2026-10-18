@@ -23,8 +23,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from curl_cffi import requests as _http
@@ -48,6 +50,11 @@ logger = logging.getLogger(__name__)
 
 # 单次请求超时（秒）。各平台搜索接口都在 1s 内返回，给足余量但不至于拖死页面。
 _REQUEST_TIMEOUT_SEC = 12.0
+
+# 全平台聚合（``search_all``）挂起所有平台的总预算（秒）。单平台最坏要翻满
+# ``_MAX_PAGES`` 页，每页一次请求，理论最坏 48s；首页等不起，因此聚合整体加一个
+# 墙钟预算，超预算的平台按失败处理，不拖住已经拿到的结果。
+_AGGREGATE_BUDGET_SEC = 30.0
 
 # 统一走 curl_cffi 的 Chrome TLS 指纹：东方财富的搜索接口按 TLS 指纹分流，原生 requests
 # 会被降级成只有 passportWeb 的响应，curl / curl_cffi 才拿得到 cmsArticleWebOld。
@@ -146,6 +153,11 @@ PLATFORMS: Tuple[NewsSearchPlatform, ...] = (
 )
 
 PLATFORM_BY_KEY: Dict[str, NewsSearchPlatform] = {item.key: item for item in PLATFORMS}
+
+# 聚合搜索在响应里回显的「平台」。它不是真实平台，只是一个标识；``PLATFORMS`` 里的
+# key 都是具体站点，不会与它撞名。
+_ALL_PLATFORMS_KEY = "all"
+_ALL_PLATFORMS_LABEL = "全部平台"
 
 
 def _strip_jsonp(text: str) -> Any:
@@ -604,6 +616,82 @@ class NewsSearchService:
             "items": [_entry_to_dict(entry) for entry in entries],
             "total": len(entries),
             "pages_scanned": pages_scanned,
+            "fetched_at": datetime.now(SHANGHAI_TZ).isoformat(timespec="seconds"),
+        }
+
+    def search_all(
+        self,
+        *,
+        keyword: str,
+        days: int = DEFAULT_WINDOW_DAYS,
+        limit: int = DEFAULT_LIMIT,
+        budget_sec: float = _AGGREGATE_BUDGET_SEC,
+    ) -> Dict[str, Any]:
+        """并发打全部平台，合并成一个跨平台结果集。
+
+        与 ``search`` 的两处关键差别：
+
+        1. **fail-open**：单个平台超时或上游异常只记入 ``failed_platforms``，不影响其余
+           平台的结果，也不向调用方抛错——5 家上游里挂一两家是常态，不该拖垮整页。
+        2. **总预算**（默认 ``_AGGREGATE_BUDGET_SEC``，可用 ``budget_sec`` 调小）：每个
+           future 的等待都收敛到同一个墙钟 deadline 上，且收尾用 ``shutdown(wait=False)``，
+           不等掉队线程。这里刻意不用 ``with ThreadPoolExecutor(...)``：它的 ``__exit__``
+           会 join 所有线程，而单平台最坏要翻 4 页、每页都可能顶满
+           ``_REQUEST_TIMEOUT_SEC``，等下去会把调用方拖到近 48s，预算就失去意义了。
+           分析链路（``SiteNewsSearchProvider``）会传一个更短的预算，首页交互则用默认值。
+
+        每个平台仍各自走 ``_collect`` 的翻页、关键词过滤与时间窗，最后统一按发布时间倒序
+        再按标题去重，所以同一条消息被多站同发只会留一条。
+        """
+        cleaned = _clean_text(keyword)
+        if not cleaned:
+            raise NewsSearchServiceError("搜索关键词不能为空")
+        window_days = max(1, min(int(days), 30))
+        capped_limit = max(1, min(int(limit), _MAX_LIMIT))
+
+        since = datetime.now(SHANGHAI_TZ) - timedelta(days=window_days)
+        merged: List[NewsSearchEntry] = []
+        failed_platforms: List[str] = []
+        pages_scanned = 0
+
+        deadline = monotonic() + max(0.1, float(budget_sec))
+        pool = ThreadPoolExecutor(
+            max_workers=max(1, len(PLATFORMS)),
+            thread_name_prefix="news-search-aggregate",
+        )
+        futures = {
+            pool.submit(self._collect, target, cleaned, since=since, limit=capped_limit): target
+            for target in PLATFORMS
+        }
+        try:
+            for future, target in futures.items():
+                try:
+                    entries, pages = future.result(timeout=max(0.1, deadline - monotonic()))
+                except Exception as exc:
+                    failed_platforms.append(target.key)
+                    logger.warning(
+                        "News search aggregate platform failed platform=%s: %s", target.key, exc
+                    )
+                    continue
+                merged.extend(entries)
+                pages_scanned += pages
+        finally:
+            pool.shutdown(wait=False)
+
+        merged.sort(
+            key=lambda item: item.published_at or datetime.min.replace(tzinfo=SHANGHAI_TZ),
+            reverse=True,
+        )
+        deduped = _dedupe_by_title(merged)[:capped_limit]
+        return {
+            "platform": _ALL_PLATFORMS_KEY,
+            "platform_label": _ALL_PLATFORMS_LABEL,
+            "query": cleaned,
+            "window_days": window_days,
+            "items": [_entry_to_dict(entry) for entry in deduped],
+            "total": len(deduped),
+            "pages_scanned": pages_scanned,
+            "failed_platforms": failed_platforms,
             "fetched_at": datetime.now(SHANGHAI_TZ).isoformat(timespec="seconds"),
         }
 

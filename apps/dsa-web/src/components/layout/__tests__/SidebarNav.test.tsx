@@ -5,6 +5,8 @@ import { SidebarNav } from '../SidebarNav';
 
 const mockLogout = vi.fn().mockResolvedValue(undefined);
 const mockGetScreeningStatus = vi.fn().mockResolvedValue({ enabled: false, available: false });
+// 行业资金默认开启，菜单项默认可见（与选股相反），所以默认返回 enabled: true。
+const mockGetIndustryFundsStatus = vi.fn().mockResolvedValue({ enabled: true });
 const mockThemeToggle = vi.fn(({ collapsed }: { collapsed?: boolean }) => (
   <button type="button">{collapsed ? '切换主题(折叠)' : '切换主题'}</button>
 ));
@@ -28,6 +30,13 @@ vi.mock('../../../api/screening', () => ({
   SYSTEM_CONFIG_CHANGED_EVENT: 'dsa-system-config-changed',
   screeningApi: {
     getStatus: () => mockGetScreeningStatus(),
+  },
+}));
+
+vi.mock('../../../api/industryFunds', () => ({
+  INDUSTRY_FUNDS_NOT_GENERATED: 'not_generated',
+  industryFundsApi: {
+    getStatus: () => mockGetIndustryFundsStatus(),
   },
 }));
 
@@ -59,7 +68,59 @@ describe('SidebarNav', () => {
 
     expect(await screen.findByRole('link', { name: '选股' })).toHaveAttribute('href', '/screening');
     const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'));
-    expect(hrefs.slice(0, 6)).toEqual(['/', '/stock-query', '/chat', '/news-analysis', '/screening', '/portfolio']);
+    expect(hrefs.slice(0, 7)).toEqual([
+      '/',
+      '/stock-query',
+      '/chat',
+      '/news-analysis',
+      '/screening',
+      '/industry-funds',
+      '/portfolio',
+    ]);
+  });
+
+  it('renders the industry funds navigation item by default', async () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('link', { name: '行业资金' })).toHaveAttribute(
+      'href',
+      '/industry-funds',
+    );
+  });
+
+  it('hides the industry funds entry when the module is disabled', async () => {
+    mockGetIndustryFundsStatus.mockResolvedValueOnce({ enabled: false });
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(mockGetIndustryFundsStatus).toHaveBeenCalled(),
+    );
+    expect(screen.queryByRole('link', { name: '行业资金' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the industry funds entry when the status request fails', async () => {
+    // 默认开启的功能不能因为一次状态请求失败就把入口藏掉。
+    mockGetIndustryFundsStatus.mockRejectedValueOnce(new Error('network down'));
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarNav />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('link', { name: '行业资金' })).toHaveAttribute(
+      'href',
+      '/industry-funds',
+    );
   });
 
   it('refreshes the controlled screening entry after config changes', async () => {

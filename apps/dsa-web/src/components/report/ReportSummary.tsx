@@ -71,8 +71,13 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
       {/* 策略点位区 */}
       <ReportStrategy strategy={strategy} language={reportLanguage} />
 
-      {/* 资讯区 */}
-      <ReportNews recordId={recordId} limit={8} language={reportLanguage} />
+      {/* 资讯区（数据来源：新闻分析 → 新闻搜索，按股票名称多平台聚合） */}
+      <ReportNews
+        stockCode={meta.stockCode}
+        stockName={meta.stockName}
+        limit={8}
+        language={reportLanguage}
+      />
 
       {/* 输入数据块低敏摘要 */}
       <AnalysisContextSummary

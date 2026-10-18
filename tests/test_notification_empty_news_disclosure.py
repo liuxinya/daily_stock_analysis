@@ -291,13 +291,26 @@ class WechatDashboardDiscloseTestCase(unittest.TestCase):
 
 
 class NoSearchProviderDisclosureTestCase(unittest.TestCase):
-    """锁住 #2225 的 fresh-clone 场景：没有 key，公共实例默认关闭。"""
+    """锁住 #2225 的 fresh-clone 场景：没有 key 时也不能没有新闻面证据。"""
+
+    def test_fresh_clone_registers_the_key_free_site_news_provider(self):
+        """契约变更：免 Key 的站内新闻搜索让「一个 key 都没配」也算有搜索渠道。"""
+        from src.search_service import SearchService, SiteNewsSearchProvider
+
+        search_service = SearchService(searxng_public_instances_enabled=False)
+
+        self.assertEqual(
+            [type(p) for p in search_service._providers],
+            [SiteNewsSearchProvider],
+        )
+        self.assertTrue(search_service.is_available)
 
     def test_no_registered_providers_discloses_missing_news_evidence(self):
+        """披露路径本身仍要守住：provider 全被清掉时必须还能说出「未配置搜索渠道」。"""
         from src.search_service import SearchService
 
         search_service = SearchService(searxng_public_instances_enabled=False)
-        self.assertEqual([], search_service._providers)
+        search_service._providers = []
         self.assertFalse(search_service.is_available)
 
         report = NotificationService.generate_daily_report(

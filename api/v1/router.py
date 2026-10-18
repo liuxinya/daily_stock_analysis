@@ -23,6 +23,7 @@ from api.v1.endpoints import (
     decision_signals,
     health,
     history,
+    industry_funds,
     intelligence,
     market_brief,
     news_search,
@@ -143,6 +144,12 @@ router.include_router(
     market_brief.router,
     prefix="/market-brief",
     tags=["MarketBrief"]
+)
+
+router.include_router(
+    industry_funds.router,
+    prefix="/industry-funds",
+    tags=["IndustryFunds"]
 )
 
 router.include_router(

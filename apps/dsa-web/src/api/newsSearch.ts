@@ -42,13 +42,21 @@ export type NewsSearchItemListResponse = {
   fetchedAt: string | null;
 };
 
+/** 全平台聚合搜索的响应。多一个失败平台列表；聚合 fail-open，不会因为上游问题整体 503。 */
+export type NewsSearchAggregateResponse = NewsSearchItemListResponse & {
+  /** 本次未取到结果的平台 key（超时或上游异常），为空表示全部平台都正常 */
+  failedPlatforms: string[];
+};
+
 export type NewsSearchQuery = {
   q: string;
   platform?: string;
-  /** 时间窗（天）；后端默认 2 天 */
+  /** 时间窗（天）；后端默认 7 天 */
   days?: number;
   limit?: number;
 };
+
+export type NewsSearchAggregateQuery = Omit<NewsSearchQuery, 'platform'>;
 
 export const newsSearchApi = {
   listPlatforms: async (): Promise<NewsSearchPlatformListResponse> => {
@@ -68,6 +76,19 @@ export const newsSearchApi = {
       timeout: 40000,
     });
     return toCamelCase<NewsSearchItemListResponse>(response.data);
+  },
+
+  // 一次并发打 5 个平台，后端有 30s 总预算，所以超时要比单平台更宽。
+  searchAll: async (query: NewsSearchAggregateQuery): Promise<NewsSearchAggregateResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/news-search/aggregate', {
+      params: {
+        q: query.q,
+        ...(query.days !== undefined ? { days: query.days } : {}),
+        ...(query.limit !== undefined ? { limit: query.limit } : {}),
+      },
+      timeout: 45000,
+    });
+    return toCamelCase<NewsSearchAggregateResponse>(response.data);
   },
 };
 

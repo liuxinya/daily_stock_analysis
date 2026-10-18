@@ -28,6 +28,7 @@
 | 选股热点题材 | EastMoney provider、参考 AlphaSift 的 hotspot 实现、last-good cache | 未指定 provider 时默认使用 EastMoney provider | 实时失败时回退热点缓存；无缓存时返回稳定空态和可读错误 |
 | 港股 | Futu、Longbridge、YFinance、AkShare、Tushare | 配置 `FUTU_OPEND_HOST` 后 Futu 作为实时与基本面主源，按 `FUTU_HK_REALTIME_SOURCE_PRIORITY` 顺序尝试 | Futu 失败时回退 Longbridge / AkShare / YFinance；Longbridge 冷却或失败时继续回退 YFinance / 其他可用源 |
 | 美股 | Longbridge、YFinance、AkShare、Tushare、Finnhub、AlphaVantage、Stooq | 配置 Longbridge 凭证后参与美股日线/实时兜底；YFinance 保持基础兜底 | Longbridge 冷却或失败时回退 YFinance / 其他可用源 |
+| 个股新闻面证据 | 付费搜索渠道（Bocha / Tavily / Brave / SerpAPI / MiniMax / Anspire / SearXNG）、免 Key 站内新闻搜索（财联社 / 同花顺-问财 / 东方财富 / 华尔街见闻 / 金十数据） | 配了任一付费渠道时只用付费渠道；**一个都没配时自动启用免 Key 站内搜索兜底**，只覆盖「最新消息」维度 | 站内搜索单站失败只记为 `failed_platforms` 不影响其余站点；全部站点失败才按「执行了检索但零命中」披露。详见 [news-search.md](news-search.md) |
 
 ## 总体链路图
 
@@ -209,6 +210,10 @@ LONGBRIDGE_ACCESS_TOKEN=your_access_token
 
 新记录会把该三态值随分析结果持久化，保证实时报告和历史报告一致。旧记录若没有保存
 `news_result_count`，其新闻检索状态只能视为未知，历史展示保持原样，不会倒推为“未配置搜索渠道”。
+
+补充：`None`（未执行检索）现在只在「`SearchService` 里一个 provider 都没有」时出现。免 Key 的
+站内新闻搜索会在没配任何付费渠道时自动注册（见 [news-search.md](news-search.md)），因此
+未配 key 的默认部署不再落进这一档，而是走 `> 0` 或 `0`。
 
 ## 后续可做的产品化增强
 
