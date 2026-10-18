@@ -66,13 +66,13 @@ function buildOverview(): IndustryFundsOverview {
           source: '上海证券交易所 query.sse.com.cn',
           asOf: '2026-10-16',
           error: '',
-          detail: { combined_delta_yi: 203.98, method: 'fallback_scale' },
+          detail: { combinedDeltaYi: 203.98, method: 'fallback_scale' },
         },
       ],
     },
     industries: {
-      weights: { net_today: 0.35, net_5d: 0.3, change_pct: 0.2, breadth: 0.15 },
-      labels: { net_today: '当日净额' },
+      weights: { netToday: 0.35, net5D: 0.3, changePct: 0.2, breadth: 0.15 },
+      labels: { netToday: '当日净额' },
       normalization: {},
       degraded: false,
       degradedReason: '',
@@ -87,7 +87,7 @@ function buildOverview(): IndustryFundsOverview {
           inflow: 130.21,
           outflow: 111.38,
           net: 18.83,
-          net5d: -16.37,
+          net5D: -16.37,
           companyCount: 82,
           leader: '晟楠科技',
           leaderChangePct: 29.98,
@@ -243,6 +243,22 @@ describe('IndustryFundsPage', () => {
     expect(screen.getByText('上海证券交易所 query.sse.com.cn')).toBeInTheDocument();
   });
 
+  it('renders the 5-day net and the camelCase ETF-delta detail (regressions on the key mapping)', async () => {
+    mockGetOverview.mockResolvedValue(buildOverview());
+
+    renderPage();
+
+    // 5 日净额列：字段名曾是 net5d，与后端 camelCase 后的 net5D 对不上，整列恒显示「—」。
+    // 行业得分排行 + 资金流向两张表都会渲染这个值，这里只要求至少命中一次。
+    const net5d = await screen.findAllByText('-16.37');
+    expect(net5d.length).toBeGreaterThanOrEqual(1);
+
+    // 展开 ETF 因子的「来源与原始数据」，detail 里的 combinedDeltaYi 曾被按 snake_case 读取，
+    // 导致下钻明细空白。锁死真实 camelCase 读取路径。
+    fireEvent.click(screen.getByLabelText('来源与原始数据'));
+    expect(await screen.findByText('203.98 亿份')).toBeInTheDocument();
+  });
+
   it('submits a refresh job and reloads the snapshot when it finishes', async () => {
     mockGetOverview
       .mockRejectedValueOnce(notGeneratedError())
@@ -318,5 +334,29 @@ describe('IndustryFundsPage', () => {
     expect(
       await screen.findByText(/推送未启用/),
     ).toBeInTheDocument();
+  });
+
+  it('shows a freshness hint when the cached snapshot is past its TTL window', async () => {
+    mockGetOverview.mockResolvedValue({
+      ...buildOverview(),
+      stale: true,
+      cacheTtlMinutes: 30,
+      ageMinutes: 90,
+    });
+
+    renderPage();
+
+    // 文案里会带上 90 分钟 / 30 分钟窗口；只断言稳定的「新鲜度窗口」短语，避开数字格式的脆弱匹配。
+    expect(await screen.findByText(/新鲜度窗口/)).toBeInTheDocument();
+  });
+
+  it('does not show the freshness hint for a fresh snapshot', async () => {
+    // 默认 fixture 不带 stale 字段，等价于「新鲜」，不应出现过时提示。
+    mockGetOverview.mockResolvedValue(buildOverview());
+
+    renderPage();
+
+    await screen.findByText('资金流向');
+    expect(screen.queryByText(/新鲜度窗口/)).not.toBeInTheDocument();
   });
 });

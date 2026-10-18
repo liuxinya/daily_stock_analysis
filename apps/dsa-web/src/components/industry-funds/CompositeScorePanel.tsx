@@ -87,14 +87,14 @@ export const CompositeScorePanel: React.FC<Props> = ({
           <div className="min-w-[12rem] flex-1 text-xs text-secondary-text">
             <p>
               {t('industryFunds.bullishAt')} ≥ {market.thresholds?.bullish ?? '—'}
-              {t('industryFunds.bearishAt')} ≤ {market.thresholds?.bearish ?? '—'}
+              {t('industryFunds.bearishAt')} &lt; {market.thresholds?.bearish ?? '—'}
             </p>
             <p className="mt-1">
               {t('industryFunds.availableWeight')}:{' '}
               <span className={cn(market.renormalized ? 'text-danger' : 'text-foreground')}>
                 {formatWeight(market.availableWeight)}
               </span>
-              {market.renormalized ? `　(${t('industryFunds.renormalized')})` : ''}
+              {market.renormalized ? `\u3000(${t('industryFunds.renormalized')})` : ''}
             </p>
           </div>
         </div>
@@ -252,18 +252,18 @@ const FactorDetail: React.FC<{
   const rows: [string, string][] = [];
 
   const numeric: [string, UiTextKey, (v: number) => string][] = [
-    ['net_sum_yi', 'industryFunds.detailNetSum', (v) => `${v} 亿元`],
-    ['net_median_yi', 'industryFunds.detailNetMedian', (v) => `${v} 亿元`],
-    ['latest_net_yi', 'industryFunds.detailLatestNet', (v) => `${v} 亿元`],
-    ['rolling_5d_net_yi', 'industryFunds.detailRolling5d', (v) => `${v} 亿元`],
-    ['combined_delta_yi', 'industryFunds.detailEtfDelta', (v) => `${v} 亿份`],
-    ['sse_delta_yi', 'industryFunds.detailSseDelta', (v) => `${v} 亿份`],
-    ['szse_delta_yi', 'industryFunds.detailSzseDelta', (v) => `${v} 亿份`],
-    ['financing_balance_yi', 'industryFunds.detailMarginBalance', (v) => `${v} 亿元`],
-    ['change_5d', 'industryFunds.detailMarginChange', (v) => formatPct(v * 100, 2, true)],
-    ['change_5d_raw', 'industryFunds.detailMarginChange', (v) => formatPct(v * 100, 2, true)],
-    ['hs300_pe', 'industryFunds.detailHs300Pe', (v) => v.toFixed(2)],
-    ['all_a_pb', 'industryFunds.detailAllAPb', (v) => v.toFixed(2)],
+    ['netSumYi', 'industryFunds.detailNetSum', (v) => `${v} 亿元`],
+    ['netMedianYi', 'industryFunds.detailNetMedian', (v) => `${v} 亿元`],
+    ['latestNetYi', 'industryFunds.detailLatestNet', (v) => `${v} 亿元`],
+    ['rolling5dNetYi', 'industryFunds.detailRolling5d', (v) => `${v} 亿元`],
+    ['combinedDeltaYi', 'industryFunds.detailEtfDelta', (v) => `${v} 亿份`],
+    ['sseDeltaYi', 'industryFunds.detailSseDelta', (v) => `${v} 亿份`],
+    ['szseDeltaYi', 'industryFunds.detailSzseDelta', (v) => `${v} 亿份`],
+    ['financingBalanceYi', 'industryFunds.detailMarginBalance', (v) => `${v} 亿元`],
+    ['change5D', 'industryFunds.detailMarginChange', (v) => formatPct(v * 100, 2, true)],
+    ['change5dRaw', 'industryFunds.detailMarginChange', (v) => formatPct(v * 100, 2, true)],
+    ['hs300Pe', 'industryFunds.detailHs300Pe', (v) => v.toFixed(2)],
+    ['allAPb', 'industryFunds.detailAllAPb', (v) => v.toFixed(2)],
   ];
 
   for (const [key, labelKey, render] of numeric) {
@@ -274,9 +274,9 @@ const FactorDetail: React.FC<{
   }
 
   const percentProps: [string, UiTextKey][] = [
-    ['hs300_pe_percentile', 'industryFunds.detailHs300PePct'],
-    ['all_a_pb_percentile', 'industryFunds.detailAllAPbPct'],
-    ['combined_percentile', 'industryFunds.detailCombinedPct'],
+    ['hs300PePercentile', 'industryFunds.detailHs300PePct'],
+    ['allAPbPercentile', 'industryFunds.detailAllAPbPct'],
+    ['combinedPercentile', 'industryFunds.detailCombinedPct'],
   ];
   for (const [key, labelKey] of percentProps) {
     const value = detail[key];
@@ -288,8 +288,8 @@ const FactorDetail: React.FC<{
   if (typeof detail.coverage === 'string' && detail.coverage) {
     rows.push([t('industryFunds.detailCoverage'), detail.coverage]);
   }
-  if (typeof detail.baseline_date === 'string' && detail.baseline_date) {
-    rows.push([t('industryFunds.detailBaselineDate'), detail.baseline_date]);
+  if (typeof detail.baselineDate === 'string' && detail.baselineDate) {
+    rows.push([t('industryFunds.detailBaselineDate'), detail.baselineDate]);
   }
   if (typeof detail.method === 'string' && detail.method) {
     rows.push([
@@ -299,21 +299,21 @@ const FactorDetail: React.FC<{
         : t('industryFunds.methodFallback'),
     ]);
   }
-  if (typeof detail.history_days === 'number') {
-    rows.push([t('industryFunds.detailHistoryDays'), String(detail.history_days)]);
+  if (typeof detail.historyDays === 'number') {
+    rows.push([t('industryFunds.detailHistoryDays'), String(detail.historyDays)]);
   }
-  if (typeof detail.history_points === 'number') {
-    rows.push([t('industryFunds.detailHistoryPoints'), String(detail.history_points)]);
+  if (typeof detail.historyPoints === 'number') {
+    rows.push([t('industryFunds.detailHistoryPoints'), String(detail.historyPoints)]);
   }
-  if (typeof detail.inflow_count === 'number' && typeof detail.industry_count === 'number') {
+  if (typeof detail.inflowCount === 'number' && typeof detail.industryCount === 'number') {
     rows.push([
       t('industryFunds.detailInflowCount'),
-      `${detail.inflow_count} / ${detail.industry_count}`,
+      `${detail.inflowCount} / ${detail.industryCount}`,
     ]);
   }
 
-  const deltaTop = Array.isArray(detail.delta_top) ? detail.delta_top : [];
-  const stockCount = typeof detail.stock_count === 'number' ? detail.stock_count : null;
+  const deltaTop = Array.isArray(detail.deltaTop) ? detail.deltaTop : [];
+  const stockCount = typeof detail.stockCount === 'number' ? detail.stockCount : null;
 
   return (
     <div className="space-y-3">

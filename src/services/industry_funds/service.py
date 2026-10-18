@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -101,6 +101,7 @@ class IndustryFundsService:
             return None
         payload["cached"] = True
         payload["stored_at"] = row.created_at.isoformat() if row.created_at else None
+        self._annotate_freshness(payload)
         return payload
 
     def history(self, *, limit: int = 30) -> List[Dict[str, Any]]:
@@ -125,6 +126,36 @@ class IndustryFundsService:
             logger.warning("行业资金：快照 %s 的 payload 无法解析，按无缓存处理", row.id)
             return None
         return payload if isinstance(payload, dict) else None
+
+    def _annotate_freshness(self, payload: Dict[str, Any]) -> None:
+        """标注缓存快照的新鲜度，但**不触发**任何重抓。
+
+        ``INDUSTRY_FUNDS_CACHE_TTL_MINUTES`` 的语义是「缓存被视为新鲜的时长」：
+        超过这个窗口只在页面上给个「数据可能已过时」的提示，让用户自己决定要不要刷新；
+        自动重抓必须走冷却受控的刷新任务，不能在只读接口里偷偷发起。这里只算出
+        ``stale`` / ``age_minutes`` / ``cache_ttl_minutes`` 三个标量，怎么展示交给前端。
+        """
+        ttl = int(getattr(self.config, "industry_funds_cache_ttl_minutes", 30) or 0)
+        age = self._age_minutes(payload.get("generated_at") or payload.get("stored_at"))
+        payload["cache_ttl_minutes"] = ttl
+        payload["age_minutes"] = age
+        payload["stale"] = bool(ttl > 0 and age is not None and age > ttl)
+
+    @staticmethod
+    def _age_minutes(timestamp: Optional[str]) -> Optional[int]:
+        """快照距今多少分钟；时间戳缺失或无法解析时返回 ``None``（即「无法判断新鲜度」）。"""
+        if not timestamp:
+            return None
+        try:
+            dt = datetime.fromisoformat(timestamp)
+        except ValueError:
+            return None
+        # generated_at 是本地 naive 时间，stored_at 可能带时区；用同类的 now 作差，避免偏移。
+        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+        seconds = (now - dt).total_seconds()
+        if seconds < 0:
+            seconds = 0.0
+        return int(seconds // 60)
 
     # ------------------------------------------------------------------ 刷新
 
@@ -181,6 +212,7 @@ class IndustryFundsService:
         所以这里不需要为它做任何串行化处理。
         """
         timeout = float(getattr(self.config, "industry_funds_fetch_timeout_sec", 30))
+        total_budget = float(getattr(self.config, "industry_funds_total_timeout_sec", 240) or 0)
         baseline = self._latest_etf_baseline()
 
         tasks = {
@@ -192,12 +224,32 @@ class IndustryFundsService:
             "stock_candidates": lambda: fetch_stock_candidates(timeout=timeout),
         }
 
+        # 总预算（INDUSTRY_FUNDS_TOTAL_TIMEOUT_SEC）是并行抓取阶段的外层兜底：六个源并发跑，
+        # 正常墙钟 ≈ 最慢的单源（各自受 fetch_timeout 约束）。当某个源的内部超时没兜住、或整体
+        # 明显超时时，这里不再干等，把没在预算内返回的源按降级处理，保证刷新任务不会被拖死。
+        # 置 0 表示不设总预算（退回「只靠单源超时」的旧行为）。
+        deadline = time.monotonic() + total_budget if total_budget > 0 else None
+
         fetched: Dict[str, Any] = {}
         with ThreadPoolExecutor(max_workers=len(tasks), thread_name_prefix="industry-funds-fetch") as pool:
             futures = {key: pool.submit(fn) for key, fn in tasks.items()}
             for key, future in futures.items():
+                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
                 try:
-                    fetched[key] = future.result()
+                    fetched[key] = future.result(timeout=remaining)
+                except FutureTimeoutError:
+                    logger.warning("行业资金：%s 超出总预算 %.0fs，按降级处理", key, total_budget)
+                    fetched[key] = {
+                        "key": key,
+                        "ok": False,
+                        "source": SOURCE_LABELS.get(key, ""),
+                        "as_of": "",
+                        "degraded": True,
+                        "degraded_reason": f"整次抓取超过总预算 {int(total_budget)}s，该数据源未在预算内返回",
+                        "error": f"total_budget_exceeded: {int(total_budget)}s",
+                        "value": {},
+                        "raw": {},
+                    }
                 except Exception as exc:
                     # 抓取层已经自己兜了异常，走到这里说明是编排层的意外错误，
                     # 也要降级而不是把整次刷新打断。

@@ -964,6 +964,7 @@ const zh = {
   'industryFunds.emptyTitle': '还没有生成过数据',
   'industryFunds.emptyDescription': '点击下方按钮抓取一次。全量抓取需要并行访问 6 个数据源并调用一次模型，大约 30~90 秒。',
   'industryFunds.dataWarnings': '数据完整性提示',
+  'industryFunds.staleHint': '当前快照生成于约 {age} 分钟前，已超过 {ttl} 分钟的新鲜度窗口；页面不会自动重抓，建议点右上角「刷新」。',
   'industryFunds.defaultFlowDisclaimer': '「主力资金」是按单笔成交金额分档推断的统计值，并非真实账户身份。',
   'industryFunds.footerMeta': '数据日期 {date}　本次刷新耗时 {duration}s',
 
@@ -2020,6 +2021,7 @@ const en: Record<UiTextKey, string> = {
   'industryFunds.emptyTitle': 'No snapshot yet',
   'industryFunds.emptyDescription': 'Use the button below to fetch one. A full fetch touches six upstream sources in parallel and makes one model call, taking roughly 30–90 seconds.',
   'industryFunds.dataWarnings': 'Data completeness notes',
+  'industryFunds.staleHint': 'This snapshot was generated about {age} minutes ago, past the {ttl}-minute freshness window; the page will not auto-refetch — use Refresh (top right) to update.',
   'industryFunds.defaultFlowDisclaimer': '"Main funds" is inferred from trade-size buckets, not from actual account identities.',
   'industryFunds.footerMeta': 'Data date {date}　refresh took {duration}s',
 

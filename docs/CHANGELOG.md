@@ -105,6 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 情报检索新增维度能力过滤：`BaseSearchProvider` 增加 `served_dimensions` 与 `serves()`（默认 `None` 表示不限，付费渠道行为不变），`search_comprehensive_intel` 按维度筛选候选 provider，某个维度没有能服务的 provider 时跳过该维度并继续后面的维度，而不是中断整轮检索。
 - [测试] 新增 `tests/test_site_news_provider.py`（15 例：免 Key 可用性、维度能力声明、条目映射与 `published_at` 可被下游时间窗解析、关键词显式传入优先于回退首 token、limit/预算透传、部分失败保留结果、全线失败判失败、只派发 `latest_news` 维度）；`tests/test_news_search.py` 补 `budget_sec` 预算用例；更新 `NoSearchProviderDisclosureTestCase` 与 SearXNG 默认用例以匹配新契约。
 - [修复] `tests/test_search_service_concurrency.py` 的两处既有问题：`_call_topic_news_in_subprocess` 的子进程现在会因为免 Key 渠道真的联网，改为在子进程侧替身里清空 provider 保持离线；`wait_for_owner` 的 `timeout_seconds <= 0.2` 断言在 Windows 单调钟同一 tick 内相减会得到 0.2000000000007276（浮点尾数）而恒定失败，改为留 1e-9 容差。
+- [新功能] Web 新增「行业资金」页面（路由 `/industry-funds`）：抓取行业资金流、龙虎榜机构净买、宽基 ETF 份额、两融余额、估值分位五类数据，算出 0-100 的可解释「现阶段方向」复合信号（五因子加权，估值反向，数据缺失按剩余权重重新归一），逐因子展示原始值 / 归一化依据 / 得分 / 权重 / 数据源 / 数据日期；再给同花顺 90 行业得分排行与规则筛选的关注个股（龙虎榜机构净买 + 行业龙头 + 个股资金流佐证，行业净流出者剔除），LLM 生成结论并按候选白名单裁剪越界个股、模型不可用时规则兜底。后端新增 `src/services/industry_funds/` 模块与 `GET /api/v1/industry-funds/{overview,history}`、`POST /jobs`（后台刷新任务 + 轮询，默认 60 秒冷却）、`POST /push`（可选推送到已配置通知渠道，`INDUSTRY_FUNDS_PUSH_ENABLED` 开关），快照落库缓存。判定口径：复合分 ≥65 偏多 / 45–65 中性 / &lt;45 偏空。
+- [改进] 行业资金 `INDUSTRY_FUNDS_CACHE_TTL_MINUTES`（默认 30 分钟）落地：`overview` 读缓存时计算快照距今分钟数，超过新鲜度窗口时在 `stale` 字段标注并由页面提示「数据可能已过时」——只提示、不自动重抓（重抓仍走受冷却约束的刷新任务）。此前该配置被解析但从未被读取。
+- [改进] 行业资金 `INDUSTRY_FUNDS_TOTAL_TIMEOUT_SEC`（默认 240 秒）落地：作为并行抓取阶段的外层总预算，某个数据源的内部超时没兜住或整体超时时不再干等，把未在预算内返回的源按降级处理（单源超时 `INDUSTRY_FUNDS_FETCH_TIMEOUT_SEC` 仍生效），置 `0` 关闭这层总预算。此前该配置被解析但从未被读取。
 
 
 ## [3.31.0] - 2026-08-23

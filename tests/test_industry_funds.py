@@ -9,11 +9,17 @@
 
 from __future__ import annotations
 
+import json
 import os
+import time
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from src.services.industry_funds import scoring
+from src.services.industry_funds import service as service_mod
+from src.services.industry_funds.service import IndustryFundsService
 from src.services.industry_funds.ths_client import (
     _parse_amount,
     _parse_pct,
@@ -209,6 +215,14 @@ class TestMarketScoring:
         assert result["verdict"] == "neutral"
         assert 45 <= result["score"] <= 65
 
+    def test_verdict_boundaries_match_doc(self):
+        """判定口径：≥65 偏多 / 45–65 中性 / <45 偏空。两个阈值点都落在中性侧（含），
+        与 docs/industry-funds.md 一致。"""
+        assert scoring._verdict(65.0)[0] == "bullish"
+        assert scoring._verdict(64.9)[0] == "neutral"
+        assert scoring._verdict(45.0)[0] == "neutral"
+        assert scoring._verdict(44.9)[0] == "bearish"
+
     def test_bullish_inputs_score_high(self):
         result = scoring.score_market(
             _fetched(
@@ -375,7 +389,7 @@ class TestIndustryScoring:
 
 
 class TestStockCandidates:
-    def _fetched(self, *, lhb_stocks, flow_stocks, industries):
+    def _fetched(self, *, lhb_stocks, flow_stocks, industries, stat_stocks=None):
         return {
             "lhb_institution": {
                 "ok": True,
@@ -387,7 +401,7 @@ class TestStockCandidates:
                 "ok": True,
                 "source": "em",
                 "degraded_reason": "",
-                "value": {"lhb_stocks": [], "flow_stocks": flow_stocks},
+                "value": {"lhb_stocks": list(stat_stocks or []), "flow_stocks": flow_stocks},
             },
             "industry_fund_flow": {
                 "ok": True,
@@ -454,6 +468,168 @@ class TestStockCandidates:
         assert "龙头乙" not in names
         assert result["dropped_count"] == 1
         assert result["dropped_by_industry"][0]["name"] == "龙头乙"
+
+    def test_leader_resolved_to_lhb_code_merges_instead_of_duplicating(self):
+        """同一只股票既是龙虎榜机构净买（路 1，按真实代码入池）又是行业领涨股（路 2，
+        按 ``LEADER::`` 占位入池）时，解析出真实代码后必须并成一条，而不是留下两条同码记录。"""
+        industries = scoring.score_industries(
+            _industry_fetched([_industry("强势行业", net=20.0, leader="甲")])
+        )["industries"]
+        fetched = self._fetched(
+            lhb_stocks=[{"code": "600000", "name": "甲", "institution_net": 5e8}],
+            flow_stocks=[],
+            industries=[],
+            # 龙虎榜个股统计把领涨股名字解析到真实代码。
+            stat_stocks=[{"code": "600000", "name": "甲", "institution_net": 5e8}],
+        )
+        result = scoring.build_stock_candidates(fetched, {"industries": industries})
+
+        codes = [c["code"] for c in result["candidates"]]
+        assert codes.count("600000") == 1
+        assert result["total_pool"] == 1
+        # 两条入选理由应合并到同一条记录上。
+        merged = next(c for c in result["candidates"] if c["code"] == "600000")
+        assert "龙虎榜机构净买" in merged["reasons"]
+        assert any("行业龙头" in r for r in merged["reasons"])
+        # sources 的两条路径计数都应命中这唯一的一条。
+        assert result["sources"]["龙虎榜机构净买"] == 1
+        assert result["sources"]["行业龙头"] == 1
+
+    def test_unresolved_leader_code_is_not_leaked(self):
+        """领涨股在龙虎榜个股统计里查不到真实代码时，占位 ``LEADER::`` 前缀必须抹掉，
+        不能泄漏到候选的代码字段。"""
+        industries = scoring.score_industries(
+            _industry_fetched([_industry("强势行业", net=20.0, leader="无代码龙头")])
+        )["industries"]
+        fetched = self._fetched(
+            lhb_stocks=[], flow_stocks=[], industries=[], stat_stocks=[]
+        )
+        result = scoring.build_stock_candidates(fetched, {"industries": industries})
+
+        leaked = [c for c in result["candidates"] if c["code"].startswith("LEADER::")]
+        assert leaked == []
+        row = next(c for c in result["candidates"] if c["name"] == "无代码龙头")
+        assert row["code"] == ""
+
+
+# ---------------------------------------------------------------------------
+# 编排层：缓存新鲜度与抓取总预算（离线，不起网络）
+# ---------------------------------------------------------------------------
+
+
+class _Row:
+    """替身快照行：只提供 service 读缓存会用到的几个属性。"""
+
+    def __init__(self, payload, created_at=None):
+        self.id = 1
+        self.payload = payload
+        self.created_at = created_at
+
+
+class _Repo:
+    def __init__(self, row):
+        self._row = row
+
+    def latest_snapshot(self):
+        return self._row
+
+
+def _overview_service(payload_dict, *, ttl=30):
+    row = _Row(json.dumps(payload_dict, ensure_ascii=False))
+    cfg = SimpleNamespace(
+        industry_funds_enabled=True,
+        industry_funds_cache_ttl_minutes=ttl,
+    )
+    return IndustryFundsService(repository=_Repo(row), config=cfg)
+
+
+class TestOverviewFreshness:
+    """INDUSTRY_FUNDS_CACHE_TTL_MINUTES：超窗只提示，不自动重抓。"""
+
+    def test_fresh_snapshot_is_not_stale(self):
+        payload = {"generated_at": datetime.now().isoformat(timespec="seconds")}
+        out = _overview_service(payload, ttl=30).overview()
+        assert out["stale"] is False
+        assert out["cache_ttl_minutes"] == 30
+        assert out["age_minutes"] is not None and out["age_minutes"] <= 1
+
+    def test_snapshot_past_ttl_is_stale(self):
+        old = (datetime.now() - timedelta(minutes=90)).isoformat(timespec="seconds")
+        out = _overview_service({"generated_at": old}, ttl=30).overview()
+        assert out["stale"] is True
+        assert out["age_minutes"] >= 89
+
+    def test_ttl_zero_disables_staleness(self):
+        old = (datetime.now() - timedelta(hours=10)).isoformat(timespec="seconds")
+        out = _overview_service({"generated_at": old}, ttl=0).overview()
+        assert out["stale"] is False
+
+    def test_unparseable_timestamp_is_never_stale(self):
+        out = _overview_service({"generated_at": "not-a-date"}, ttl=30).overview()
+        assert out["age_minutes"] is None
+        assert out["stale"] is False
+
+
+# @@BUDGET_TESTS@@
+
+
+_BUDGET_SOURCES = (
+    "fetch_industry_fund_flow",
+    "fetch_lhb_institution",
+    "fetch_etf_shares",
+    "fetch_margin",
+    "fetch_valuation",
+    "fetch_stock_candidates",
+)
+_BUDGET_KEYS = {
+    "industry_fund_flow",
+    "lhb_institution",
+    "etf_share",
+    "margin",
+    "valuation",
+    "stock_candidates",
+}
+
+
+def _budget_service(total_timeout):
+    cfg = SimpleNamespace(
+        industry_funds_enabled=True,
+        industry_funds_fetch_timeout_sec=30,
+        industry_funds_total_timeout_sec=total_timeout,
+    )
+    return IndustryFundsService(repository=_Repo(None), config=cfg)
+
+
+class TestFetchTotalBudget:
+    """INDUSTRY_FUNDS_TOTAL_TIMEOUT_SEC：并行抓取阶段的外层兜底。"""
+
+    def test_budget_degrades_stragglers(self, monkeypatch):
+        def _slow(*_a, **_k):
+            time.sleep(0.3)
+            return {"key": "x", "ok": True, "source": "s", "as_of": "2026-10-16", "value": {}, "raw": {}}
+
+        for name in _BUDGET_SOURCES:
+            monkeypatch.setattr(service_mod, name, _slow)
+
+        fetched = _budget_service(0.05)._fetch_all()
+
+        assert set(fetched) == _BUDGET_KEYS
+        budgeted = [v for v in fetched.values() if "total_budget_exceeded" in str(v.get("error") or "")]
+        assert budgeted, "总预算耗尽时未返回的源应被标注降级"
+        for entry in budgeted:
+            assert entry["ok"] is False and entry["degraded"] is True
+
+    def test_budget_zero_waits_for_all(self, monkeypatch):
+        def _quick(*_a, **_k):
+            return {"key": "x", "ok": True, "source": "s", "as_of": "2026-10-16", "value": {}, "raw": {}}
+
+        for name in _BUDGET_SOURCES:
+            monkeypatch.setattr(service_mod, name, _quick)
+
+        fetched = _budget_service(0)._fetch_all()
+
+        assert set(fetched) == _BUDGET_KEYS
+        assert all(entry.get("ok") for entry in fetched.values())
 
 
 # ---------------------------------------------------------------------------

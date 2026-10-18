@@ -160,8 +160,8 @@ export const ConclusionSection: React.FC<Props> = ({
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <CandidateRow key={row.code} row={row} />
+                {rows.map((row, index) => (
+                  <CandidateRow key={`${row.code || row.name}-${index}`} row={row} />
                 ))}
               </tbody>
             </table>
@@ -202,9 +202,12 @@ export const ConclusionSection: React.FC<Props> = ({
 
 const CandidateRow: React.FC<{ row: StockCandidate }> = ({ row }) => {
   const metrics = row.metrics ?? {};
+  // 领涨股未解析出真实代码时，后端会返回空串；历史快照里还可能残留 ``LEADER::`` 占位。
+  // 两种都不该作为代码显示，退回「—」。
+  const code = row.code && !row.code.startsWith('LEADER::') ? row.code : '—';
   return (
     <tr className={cn('border-b border-border/30', row.flowWarning && 'bg-danger/5')}>
-      <td className="py-2 pr-3 font-mono text-xs text-secondary-text">{row.code}</td>
+      <td className="py-2 pr-3 font-mono text-xs text-secondary-text">{code}</td>
       <td className="py-2 pr-3 font-medium text-foreground">{row.name}</td>
       <td className="py-2 pr-3 text-xs text-secondary-text">
         <ul className="space-y-0.5">

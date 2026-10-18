@@ -143,8 +143,8 @@ const IndustryScoreRow: React.FC<{
       <td className={cn('py-2 pr-3 text-right tabular-nums', inOutTone(row.net))}>
         {formatSignedYi(row.net)}
       </td>
-      <td className={cn('py-2 pr-3 text-right tabular-nums', inOutTone(row.net5d))}>
-        {formatSignedYi(row.net5d)}
+      <td className={cn('py-2 pr-3 text-right tabular-nums', inOutTone(row.net5D))}>
+        {formatSignedYi(row.net5D)}
       </td>
       <td className={cn('py-2 pr-3 text-right tabular-nums', inOutTone(row.changePct))}>
         {formatPct(row.changePct, 2, true)}

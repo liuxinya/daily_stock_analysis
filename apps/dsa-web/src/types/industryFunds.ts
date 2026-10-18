@@ -61,7 +61,7 @@ export type IndustryRow = {
   inflow: number | null;
   outflow: number | null;
   net: number | null;
-  net5d: number | null;
+  net5D: number | null;
   companyCount: number | null;
   leader: string;
   leaderChangePct: number | null;
@@ -87,7 +87,7 @@ export type CandidateMetrics = {
   sellerCount?: number | null;
   listedCount?: number | null;
   changePct?: number | null;
-  change1m?: number | null;
+  change1M?: number | null;
   close?: number | null;
   marketCap?: number | null;
   reason?: string;
@@ -95,7 +95,7 @@ export type CandidateMetrics = {
   industry?: string;
   industryScore?: number | null;
   industryNet?: number | null;
-  industryNet5d?: number | null;
+  industryNet5D?: number | null;
   leaderChangePct?: number | null;
   leaderPrice?: number | null;
   turnoverRate?: number | null;
@@ -181,6 +181,10 @@ export type IndustryFundsOverview = {
   warnings: string[];
   cached: boolean;
   storedAt?: string | null;
+  /** 新鲜度：读缓存时由后端填充。stale 为真表示距生成已超过 cacheTtlMinutes，仅提示不自动重抓。 */
+  stale?: boolean;
+  cacheTtlMinutes?: number;
+  ageMinutes?: number | null;
 };
 
 export type IndustryFundsJob = {

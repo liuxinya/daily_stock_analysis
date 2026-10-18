@@ -52,6 +52,11 @@ class IndustryFundsOverviewResponse(BaseModel):
     # 读取缓存时为 True，本次刚抓取完成为 False。
     cached: bool = False
     stored_at: Optional[str] = None
+    # 新鲜度：overview 读缓存时填充。stale=True 表示距生成已超过 cache_ttl_minutes，
+    # 仅作提示，不会自动重抓；age_minutes 为距今分钟数，无法判断时为 None。
+    stale: bool = False
+    cache_ttl_minutes: int = 0
+    age_minutes: Optional[int] = None
 
 
 class IndustryFundsJobModel(BaseModel):

@@ -311,7 +311,7 @@ def _score_valuation(fetched: Dict[str, Any]) -> Dict[str, Any]:
 def _verdict(score: float) -> tuple[str, str]:
     if score >= MARKET_BULLISH_THRESHOLD:
         return "bullish", "偏多"
-    if score <= MARKET_BEARISH_THRESHOLD:
+    if score < MARKET_BEARISH_THRESHOLD:
         return "bearish", "偏空"
     return "neutral", "中性"
 
@@ -647,18 +647,47 @@ def build_stock_candidates(
         if code:
             flow_by_code[code] = stock
 
-    # 用龙虎榜个股统计补全领涨股的代码与基本面字段
+    # 用龙虎榜个股统计补全领涨股的代码与基本面字段。领涨股此前是用占位键
+    # ``LEADER::<name>`` 存进池子的；一旦解析出真实代码，必须把它从占位键挪到真实代码键。
+    # 否则同一只股票若又走了路 1（龙虎榜机构净买，按真实代码入池），会在池子里留下两条
+    # 同码记录，最终产出重复候选，total_pool 与 sources 也随之虚高。
     stat_by_name = {str(s.get("name") or "").strip(): s for s in stat_stocks}
-    for row in pool.values():
+    for placeholder_key, row in list(pool.items()):
         if not row["code"].startswith("LEADER::"):
             continue
         matched = stat_by_name.get(row["name"])
-        if matched:
-            row["code"] = matched.get("code") or row["code"]
-            row["metrics"].setdefault("institution_net", matched.get("institution_net"))
-            row["metrics"].setdefault("lhb_net", matched.get("lhb_net"))
-            row["metrics"].setdefault("listed_count", matched.get("listed_count"))
-            row["metrics"].setdefault("change_1m", matched.get("change_1m"))
+        if not matched:
+            continue
+        row["metrics"].setdefault("institution_net", matched.get("institution_net"))
+        row["metrics"].setdefault("lhb_net", matched.get("lhb_net"))
+        row["metrics"].setdefault("listed_count", matched.get("listed_count"))
+        row["metrics"].setdefault("change_1m", matched.get("change_1m"))
+
+        real_code = str(matched.get("code") or "").strip()
+        if not real_code:
+            continue
+        existing = pool.get(real_code)
+        if existing is not None and existing is not row:
+            # 路 1 已按真实代码建过条目 —— 把龙头这条并进去（合并入选理由与补充指标），
+            # 而不是留下两条同码记录。路 1 自身的指标更权威，用 setdefault 不覆盖。
+            for reason in row["reasons"]:
+                if reason not in existing["reasons"]:
+                    existing["reasons"].append(reason)
+            for metric_key, metric_value in row["metrics"].items():
+                if metric_value is not None:
+                    existing["metrics"].setdefault(metric_key, metric_value)
+            pool.pop(placeholder_key, None)
+        else:
+            # 没有重复，直接把占位键换成真实代码。
+            row["code"] = real_code
+            pool.pop(placeholder_key, None)
+            pool[real_code] = row
+
+    # 仍未解析出真实代码的领涨股，把占位前缀抹掉，避免 ``LEADER::`` 泄漏到候选、
+    # 被剔除列表以及下游（Web 代码列、IM 推送）。前端/推送另有兜底处理历史快照。
+    for row in pool.values():
+        if row["code"].startswith("LEADER::"):
+            row["code"] = ""
 
     # 记录领涨股所属行业的资金方向，供过滤使用
     for row in pool.values():

@@ -11,7 +11,7 @@ import { formatPct, formatSignedYi, formatYi, inOutTone } from './format';
 
 type Translate = (key: UiTextKey) => string;
 
-type SortKey = 'net' | 'net5d' | 'changePct' | 'name';
+type SortKey = 'net' | 'net5D' | 'changePct' | 'name';
 
 type Props = {
   industries: IndustryRow[];
@@ -101,9 +101,9 @@ export const FundFlowSection: React.FC<Props> = ({ industries, disclaimer, sourc
               />
               <SortHeader
                 label={t('industryFunds.colNet5d')}
-                active={sortKey === 'net5d'}
+                active={sortKey === 'net5D'}
                 descending={descending}
-                onClick={() => toggleSort('net5d')}
+                onClick={() => toggleSort('net5D')}
                 align="right"
               />
               <SortHeader
@@ -129,8 +129,8 @@ export const FundFlowSection: React.FC<Props> = ({ industries, disclaimer, sourc
                 <td className={cn('py-2 pr-3 text-right tabular-nums', inOutTone(row.net))}>
                   {formatSignedYi(row.net)}
                 </td>
-                <td className={cn('py-2 pr-3 text-right tabular-nums', inOutTone(row.net5d))}>
-                  {formatSignedYi(row.net5d)}
+                <td className={cn('py-2 pr-3 text-right tabular-nums', inOutTone(row.net5D))}>
+                  {formatSignedYi(row.net5D)}
                 </td>
                 <td className={cn('py-2 pr-3 text-right tabular-nums', inOutTone(row.changePct))}>
                   {formatPct(row.changePct, 2, true)}

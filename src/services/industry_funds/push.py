@@ -39,7 +39,7 @@ def render_markdown(payload: Dict[str, Any]) -> str:
         thresholds = market.get("thresholds") or {}
         lines.append(
             f"**复合信号：{score} / 100（{market.get('verdict_label')}）**"
-            f"　偏多 ≥{thresholds.get('bullish')}，偏空 ≤{thresholds.get('bearish')}"
+            f"　偏多 ≥{thresholds.get('bullish')}，偏空 <{thresholds.get('bearish')}"
         )
     lines.append("")
 
@@ -87,8 +87,12 @@ def render_markdown(payload: Dict[str, Any]) -> str:
                 bits.append(f"当日资金净额 {metrics['main_net'] / 1e8:+,.2f} 亿元")
             if metrics.get("industry"):
                 bits.append(f"所属行业 {metrics['industry']}")
+            # 未解析出真实代码的领涨股，代码可能为空或残留 ``LEADER::`` 占位（含历史快照），
+            # 不能把占位符推给用户，只显示名称。
+            code = str(row.get("code") or "").strip()
+            code_prefix = f"{code} " if code and not code.startswith("LEADER::") else ""
             lines.append(
-                f"- {row.get('code')} {row.get('name')}｜{' + '.join(row.get('reasons') or [])}"
+                f"- {code_prefix}{row.get('name')}｜{' + '.join(row.get('reasons') or [])}"
                 + (f"｜{'；'.join(bits)}" if bits else "")
             )
         lines.append("")

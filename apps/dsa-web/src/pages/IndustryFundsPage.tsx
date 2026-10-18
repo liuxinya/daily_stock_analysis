@@ -237,6 +237,15 @@ const IndustryFundsPage: React.FC = () => {
         />
       ) : (
         <div className="space-y-5">
+          {overview.cached && overview.stale ? (
+            <InlineAlert
+              variant="info"
+              message={t('industryFunds.staleHint')
+                .replace('{age}', String(overview.ageMinutes ?? '—'))
+                .replace('{ttl}', String(overview.cacheTtlMinutes ?? '—'))}
+            />
+          ) : null}
+
           {overview.degraded && overview.warnings?.length ? (
             <InlineAlert
               variant="warning"
@@ -258,7 +267,7 @@ const IndustryFundsPage: React.FC = () => {
             sourceNote={
               flowSource
                 ? `${t('industryFunds.source')}: ${flowSource.source}${
-                    flowSource.asOf ? `　${flowSource.asOf}` : ''
+                    flowSource.asOf ? `\u3000${flowSource.asOf}` : ''
                   }`
                 : ''
             }

@@ -49,7 +49,7 @@ MARKET_FACTOR_LABELS: dict[str, str] = {
 # 每个因子的归一化依据，直接展示给用户看"这个分是怎么来的"。
 MARKET_FACTOR_NORMALIZATION: dict[str, str] = {
     "industry_fund_flow": "净流入行业家数占比线性映射（占比 50% 为中性）",
-    "lhb_institution": "近 60 交易日机构净买滚动值的历史分位",
+    "lhb_institution": "近 120 个交易日机构净买滚动值的历史分位",
     "etf_share": "宽基 ETF 份额 5 日净增额的历史分位",
     "margin": "两融余额 5 日变化率的历史分位",
     "valuation": "沪深300 PE 分位与全A PB 分位均值的反向映射（分位越低得分越高）",
