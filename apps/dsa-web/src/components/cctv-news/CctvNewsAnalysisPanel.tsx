@@ -1,5 +1,5 @@
 import type React from 'react';
-import { AlertTriangle, Info, Lightbulb, MessageSquare, Search, ShieldCheck, TrendingDown, TrendingUp } from 'lucide-react';
+import { AlertTriangle, CandlestickChart, Info, Lightbulb, MessageSquare, Search, ShieldCheck, TrendingDown, TrendingUp } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { Badge, Button, Card, InlineAlert } from '../common';
@@ -11,6 +11,7 @@ import type {
   CctvStockCandidate,
 } from '../../api/cctvNews';
 import { buildBuyTimingPrompt, sanitizeFollowUpStockCode } from '../../utils/chatFollowUp';
+import { resolveStockChartCode, useStockChartStore } from '../../stores/stockChartStore';
 import {
   directionBadgeVariant,
   directionLabel,
@@ -122,6 +123,41 @@ const IndustryList: React.FC<IndustryListProps> = ({
         </li>
       ))}
     </ul>
+  );
+};
+
+/**
+ * 个股名 + 代码。代码可用时做成按钮，点开全局行情弹窗（与新闻分析的关注股票同一个入口）。
+ *
+ * 代码来自模型推断，`canOpenStockChart` 按项目既有规则校验；校验不过就退回纯文本，
+ * 不把一段不确定的文本丢给行情接口。操作列的「问股 / 查询」保持不变。
+ */
+const StockNameCell: React.FC<{ stock: CctvStockCandidate }> = ({ stock }) => {
+  const openStockChart = useStockChartStore((state) => state.open);
+  const code = resolveStockChartCode(stock.code);
+
+  if (!code) {
+    return (
+      <>
+        <span className="font-medium text-foreground">{stock.name}</span>
+        {stock.code ? <span className="text-xxs tabular-nums text-muted-text">{stock.code}</span> : null}
+      </>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => openStockChart(code, stock.name)}
+      aria-label={`查看 ${stock.name}(${code}) 的实时行情与 K 线`}
+      className="group inline-flex items-center gap-1.5 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/60"
+    >
+      <span className="font-medium text-foreground underline decoration-dotted underline-offset-4 group-hover:text-cyan">
+        {stock.name}
+      </span>
+      <span className="text-xxs tabular-nums text-muted-text group-hover:text-cyan">{code}</span>
+      <CandlestickChart className="h-3 w-3 text-muted-text group-hover:text-cyan" aria-hidden="true" />
+    </button>
   );
 };
 
@@ -302,10 +338,7 @@ export const CctvNewsAnalysisPanel: React.FC<CctvNewsAnalysisPanelProps> = ({
                   <tr key={`${stock.name}-${stock.code ?? 'na'}`}>
                     <td className="px-3 py-3 align-top">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="font-medium text-foreground">{stock.name}</span>
-                        {stock.code ? (
-                          <span className="text-xxs tabular-nums text-muted-text">{stock.code}</span>
-                        ) : null}
+                        <StockNameCell stock={stock} />
                         {stock.isLeader ? (
                           <Badge variant="warning" size="sm">
                             龙头

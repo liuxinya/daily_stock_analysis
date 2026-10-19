@@ -1,8 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 import { MarketBriefPanel } from '../MarketBriefPanel';
-import type { BriefEvidence, MarketBriefPayload } from '../../../api/marketBrief';
+import type { BriefEvidence, BriefWatchItem, MarketBriefPayload } from '../../../api/marketBrief';
+import { useStockChartStore } from '../../../stores/stockChartStore';
+
+const renderPanel = (payload: MarketBriefPayload) => render(
+  <MemoryRouter>
+    <MarketBriefPanel payload={payload} />
+  </MemoryRouter>,
+);
 
 const evidence: BriefEvidence[] = [
   {
@@ -80,7 +88,7 @@ describe('MarketBriefPanel evidence', () => {
   afterEach(() => cleanup());
 
   it('renders a 信源 button per fact-layer entry sized by resolvable references', () => {
-    render(<MarketBriefPanel payload={makePayload()} />);
+    renderPanel(makePayload());
     // events→2、sectors→3、takeaways→1
     expect(screen.getByRole('button', { name: '查看 2 条引用信源原文' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '查看 3 条引用信源原文' })).toBeInTheDocument();
@@ -88,7 +96,7 @@ describe('MarketBriefPanel evidence', () => {
   });
 
   it('opens the drawer with the referenced originals and only links real urls', () => {
-    render(<MarketBriefPanel payload={makePayload()} />);
+    renderPanel(makePayload());
     // 点关键消息的「信源 2」→ 抽屉里出现 id=1、id=2 两条原文
     fireEvent.click(screen.getByRole('button', { name: '查看 2 条引用信源原文' }));
     const dialog = screen.getByRole('dialog');
@@ -102,8 +110,44 @@ describe('MarketBriefPanel evidence', () => {
 
   it('renders no 信源 button and does not crash when evidence is absent', () => {
     // 旧版本生成的汇总没有 evidence 字段：按钮整体不出现，面板照常渲染
-    render(<MarketBriefPanel payload={makePayload({ evidence: undefined })} />);
+    renderPanel(makePayload({ evidence: undefined }));
     expect(screen.queryByRole('button', { name: /引用信源原文/ })).not.toBeInTheDocument();
     expect(screen.getByText('板块方向')).toBeInTheDocument();
+  });
+});
+
+const withWatchList = (watchList: BriefWatchItem[]): MarketBriefPayload => {
+  const payload = makePayload();
+  return { ...payload, result: { ...payload.result, watchList } };
+};
+
+describe('MarketBriefPanel 关注股票', () => {
+  afterEach(() => cleanup());
+
+  beforeEach(() => {
+    useStockChartStore.setState({ target: null });
+  });
+
+  it('点个股名把标的交给全局行情弹窗', () => {
+    renderPanel(withWatchList([
+      { name: '掌阅科技', code: '603533', sector: '传媒', direction: 'bullish', rationale: '主题标的', evidenceIds: [1] },
+    ]));
+
+    fireEvent.click(screen.getByRole('button', { name: '查看 掌阅科技(603533) 的实时行情与 K 线' }));
+
+    // 弹窗挂在 App 全局，面板只负责把标的写进 store
+    expect(useStockChartStore.getState().target).toEqual({ code: '603533', name: '掌阅科技' });
+  });
+
+  it('代码缺失或非 A 股时保持纯文本，不给行情入口', () => {
+    renderPanel(withWatchList([
+      { name: '无代码标的', code: null, sector: '传媒', direction: 'neutral', rationale: '', evidenceIds: [] },
+      { name: '腾讯控股', code: 'HK00700', sector: '传媒', direction: 'bullish', rationale: '', evidenceIds: [] },
+    ]));
+
+    expect(screen.getByText('无代码标的')).toBeInTheDocument();
+    expect(screen.getByText('HK00700')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /的实时行情与 K 线/ })).not.toBeInTheDocument();
+    expect(useStockChartStore.getState().target).toBeNull();
   });
 });

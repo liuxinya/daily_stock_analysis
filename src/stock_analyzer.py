@@ -18,7 +18,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 from enum import Enum
 
 import pandas as pd
@@ -169,6 +169,27 @@ class TrendAnalysisResult:
         }
 
 
+def calculate_macd_series(
+    close: pd.Series,
+    *,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> Tuple[pd.Series, pd.Series, pd.Series]:
+    """计算 MACD 三条序列，返回 ``(DIF, DEA, BAR)``。
+
+    公式：DIF = EMA(fast) - EMA(slow)，DEA = EMA(DIF, signal)，BAR = (DIF - DEA) * 2。
+
+    独立成模块级函数是为了让图表接口和这里的趋势分析共用同一份口径 —— 同一只股票
+    在报告里和在 K 线图上必须是同一个 MACD，不能各算一套。
+    """
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    dif = ema_fast - ema_slow
+    dea = dif.ewm(span=signal, adjust=False).mean()
+    return dif, dea, (dif - dea) * 2
+
+
 class StockTrendAnalyzer:
     """
     股票趋势分析器
@@ -286,20 +307,15 @@ class StockTrendAnalyzer:
         - MACD = (DIF - DEA) * 2
         """
         df = df.copy()
-
-        # 计算快慢线 EMA
-        ema_fast = df['close'].ewm(span=self.MACD_FAST, adjust=False).mean()
-        ema_slow = df['close'].ewm(span=self.MACD_SLOW, adjust=False).mean()
-
-        # 计算快线 DIF
-        df['MACD_DIF'] = ema_fast - ema_slow
-
-        # 计算信号线 DEA
-        df['MACD_DEA'] = df['MACD_DIF'].ewm(span=self.MACD_SIGNAL, adjust=False).mean()
-
-        # 计算柱状图
-        df['MACD_BAR'] = (df['MACD_DIF'] - df['MACD_DEA']) * 2
-
+        dif, dea, bar = calculate_macd_series(
+            df['close'],
+            fast=self.MACD_FAST,
+            slow=self.MACD_SLOW,
+            signal=self.MACD_SIGNAL,
+        )
+        df['MACD_DIF'] = dif
+        df['MACD_DEA'] = dea
+        df['MACD_BAR'] = bar
         return df
 
     def _calculate_rsi(self, df: pd.DataFrame) -> pd.DataFrame:

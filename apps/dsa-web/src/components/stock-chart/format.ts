@@ -44,3 +44,11 @@ export const withSign = (value: unknown, suffix = ''): string => {
   if (n > 0) return `+${raw}${suffix}`;
   return `${raw}${suffix}`;
 };
+
+/** 成交量 / 成交额的中文量级缩写，K 线图与指标副图共用。 */
+export const formatVolume = (value: number): string => {
+  if (!Number.isFinite(value) || value === 0) return '--';
+  if (Math.abs(value) >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
+  if (Math.abs(value) >= 1e4) return `${(value / 1e4).toFixed(1)}万`;
+  return String(value);
+};

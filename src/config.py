@@ -1051,6 +1051,11 @@ class Config:
     baidu_finance_token_ttl_sec: int = 90  # 单个 token 的进程内缓存时长（秒）；上游寿命约 2 分钟
     baidu_finance_token_push_secret: str = ""  # Electron 推入 token 的共享密钥；为空则 /_token 端点禁用
 
+    # === 图表数据（同花顺行情 CDN）配置 ===
+    # K 线 / 分时走 d.10jqka.com.cn 的静态 JSONP 文件，无 token、无鉴权，按需拉取不落库。
+    ths_chart_timeout_sec: int = 10  # 单次上游请求超时（秒）
+    ths_chart_cache_ttl_sec: int = 30  # 进程内缓存时长（秒）；置 0 关闭缓存
+
     # === Agent 模式配置 ===
     agent_backend: str = "auto"
     agent_generation_backend: str = AUTO_AGENT_BACKEND_ID
@@ -2123,6 +2128,14 @@ class Config:
                 field_name='BAIDU_FINANCE_TOKEN_TTL_SEC', minimum=10, maximum=300,
             ),
             baidu_finance_token_push_secret=((os.getenv('BAIDU_FINANCE_TOKEN_PUSH_SECRET') or '').strip()),
+            ths_chart_timeout_sec=parse_env_int(
+                os.getenv('THS_CHART_TIMEOUT_SEC'), 10,
+                field_name='THS_CHART_TIMEOUT_SEC', minimum=3, maximum=60,
+            ),
+            ths_chart_cache_ttl_sec=parse_env_int(
+                os.getenv('THS_CHART_CACHE_TTL_SEC'), 30,
+                field_name='THS_CHART_CACHE_TTL_SEC', minimum=0, maximum=600,
+            ),
             cctv_news_analysis_call_timeout_sec=parse_env_int(
                 os.getenv('CCTV_NEWS_ANALYSIS_CALL_TIMEOUT_SEC'),
                 120,

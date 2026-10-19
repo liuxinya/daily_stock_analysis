@@ -1,11 +1,19 @@
 # 股票查询（仿百度金融）接入说明
 
-「股票查询」是 Web / 桌面端的个股看板（仿百度金融），数据来自百度财经
+> **现状提示（2026-10）**：「股票查询」页已改为自有行情 + 多周期 K 线，见
+> [图表数据说明](chart-data.md)。本文描述的百度财经代理与 `acs-token` 签名链路
+> **后端仍完整保留**（`api/v1/endpoints/baidu_finance.py`、`src/services/baidu_finance_token.py`、
+> `BAIDU_FINANCE_*` 配置、桌面端 Electron 推 token），但**前端已无调用方** ——
+> 概览/资金/简况/股评/资讯/财务/分析七个百度 tab 随该次改动一并移除。
+> 保留后端是为了不误伤桌面端 token 链路与镜像构建；是否连同 Playwright / Chromium
+> 依赖一起下线，属于单独的部署决策，尚未做。下文内容对后端代理本身仍然有效。
+
+「股票查询」曾是 Web / 桌面端的个股看板（仿百度金融），数据来自百度财经
 `finance.pae.baidu.com` 的一组非公开接口，由后端 `api/v1/endpoints/baidu_finance.py`
 统一代理：上游路径走固定白名单，绝不接受调用方传入地址，避免变成任意地址转发（SSRF）；
 上游按 TLS 指纹拦截客户端（httpx / requests 一律 403），因此走 `curl_cffi` 的浏览器指纹模拟。
 
-本文件说明其中「资金」「分析」两个 tab 依赖的 `acs-token` 反爬签名：为什么需要、
+本文件说明其中「资金」「分析」两个 tab 曾依赖的 `acs-token` 反爬签名：为什么需要、
 两种 token 来源、寿命与降级行为、相关配置与排障。
 
 ## 为什么需要 acs-token

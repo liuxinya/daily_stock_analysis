@@ -20,6 +20,7 @@ from api.v1.endpoints import (
     backtest,
     baidu_finance,
     cctv_news,
+    chart,
     decision_signals,
     health,
     history,
@@ -120,6 +121,12 @@ router.include_router(
     baidu_finance.router,
     prefix="/baidu-finance",
     tags=["BaiduFinance"]
+)
+
+router.include_router(
+    chart.router,
+    prefix="/chart",
+    tags=["Chart"]
 )
 
 router.include_router(

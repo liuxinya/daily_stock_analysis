@@ -292,18 +292,40 @@ def _evaluate_macd(stock_code: str, params: Dict[str, Any], df: pd.DataFrame) ->
     )
 
 
-def _evaluate_kdj(stock_code: str, params: Dict[str, Any], df: pd.DataFrame) -> IndicatorEvaluation:
-    period = int(params["period"])
-    k_period = int(params["k_period"])
-    d_period = int(params["d_period"])
-    direction = str(params["direction"])
+def compute_kdj(
+    df: pd.DataFrame,
+    *,
+    period: int = 9,
+    k_period: int = 3,
+    d_period: int = 3,
+) -> pd.DataFrame:
+    """计算 KDJ 三条序列，返回含 ``k`` / ``d`` / ``j`` 列的 DataFrame。
+
+    RSV = (C - LLV(low, period)) / (HHV(high, period) - LLV(low, period)) * 100，
+    K = SMMA(RSV, k_period)，D = SMMA(K, d_period)，J = 3K - 2D。
+    最高最低相等（如一字板）时 RSV 取 50，避免除零把整条线污染成 NaN。
+
+    独立成公开函数是为了让告警的金叉死叉判定与 K 线图上的 KDJ 共用同一份口径。
+    """
     lowest_low = df["low"].rolling(window=period).min()
     highest_high = df["high"].rolling(window=period).max()
     denominator = highest_high - lowest_low
     rsv = ((df["close"] - lowest_low) / denominator.mask(denominator == 0) * 100).fillna(50)
     k_value = rsv.ewm(alpha=1 / k_period, adjust=False).mean()
     d_value = k_value.ewm(alpha=1 / d_period, adjust=False).mean()
-    delta = k_value - d_value
+    return pd.DataFrame(
+        {"k": k_value, "d": d_value, "j": 3 * k_value - 2 * d_value},
+        index=df.index,
+    )
+
+
+def _evaluate_kdj(stock_code: str, params: Dict[str, Any], df: pd.DataFrame) -> IndicatorEvaluation:
+    period = int(params["period"])
+    k_period = int(params["k_period"])
+    d_period = int(params["d_period"])
+    direction = str(params["direction"])
+    kdj = compute_kdj(df, period=period, k_period=k_period, d_period=d_period)
+    delta = kdj["k"] - kdj["d"]
     latest = _latest_timestamp(df)
     prev_delta, curr_delta = float(delta.iloc[-2]), float(delta.iloc[-1])
     if not all(isfinite(value) for value in (prev_delta, curr_delta)):

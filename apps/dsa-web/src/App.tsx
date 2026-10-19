@@ -3,6 +3,8 @@ import { lazy, useEffect } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
 import { CctvAnalysisNotifier } from './components/cctv-news/CctvAnalysisNotifier';
+// 全局行情弹窗：挂在 Router 内、Routes 外，任何页面调 useStockChartStore().open 即可唤出。
+import { StockChartModal } from './components/stock-chart/StockChartModal';
 import {
   PageLoadingFallback,
   RouteOutletBoundary,
@@ -115,6 +117,7 @@ const AppContent: React.FC = () => {
       </Route>
     </Routes>
       <CctvAnalysisNotifier />
+      <StockChartModal />
     </>
   );
 };

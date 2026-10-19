@@ -1,8 +1,10 @@
 import type React from 'react';
 import { useMemo, useState } from 'react';
+import { CandlestickChart } from 'lucide-react';
 
 import { Badge, Card, InlineAlert } from '../common';
-import type { BriefEvidence, MarketBriefPayload } from '../../api/marketBrief';
+import type { BriefEvidence, BriefWatchItem, MarketBriefPayload } from '../../api/marketBrief';
+import { resolveStockChartCode, useStockChartStore } from '../../stores/stockChartStore';
 import { BriefEvidenceButton } from './BriefEvidenceButton';
 import { BriefEvidenceDrawer } from './BriefEvidenceDrawer';
 import {
@@ -32,6 +34,43 @@ const TermChips: React.FC<{ terms: string[] }> = ({ terms }) => {
 };
 
 /**
+ * 关注股票的名称 + 代码。代码可用时做成按钮，点开全局行情弹窗。
+ *
+ * 代码来自模型推断（服务端只放过 6 位数字，其余置空），`canOpenStockChart` 再按
+ * 项目既有规则校验一次；校验不过就退回纯文本，而不是把一段不确定的文本丢给行情
+ * 接口。行情与图表接口只覆盖 A 股 / 场内基金，所以非 6 位码一律不给入口。
+ */
+const WatchStockName: React.FC<{
+  item: BriefWatchItem;
+  onOpen: (code: string, name: string) => void;
+}> = ({ item, onOpen }) => {
+  const code = resolveStockChartCode(item.code);
+  if (!code) {
+    return (
+      <>
+        <span className="text-sm font-medium text-foreground">{item.name}</span>
+        {item.code ? <span className="text-xxs tabular-nums text-muted-text">{item.code}</span> : null}
+      </>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(code, item.name)}
+      aria-label={`查看 ${item.name}(${code}) 的实时行情与 K 线`}
+      className="group inline-flex items-center gap-1.5 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/60"
+    >
+      <span className="text-sm font-medium text-foreground underline decoration-dotted underline-offset-4 group-hover:text-cyan">
+        {item.name}
+      </span>
+      <span className="text-xxs tabular-nums text-muted-text group-hover:text-cyan">{code}</span>
+      <CandlestickChart className="h-3 w-3 text-muted-text group-hover:text-cyan" aria-hidden="true" />
+    </button>
+  );
+};
+
+/**
  * 汇总结果面板。
  *
  * 事实层（关键消息 / 板块方向 / 要点）与推断层（关注股票）刻意分开呈现：
@@ -53,6 +92,8 @@ export const MarketBriefPanel: React.FC<MarketBriefPanelProps> = ({ payload }) =
     setDrawerItems(items);
     setDrawerOpen(true);
   };
+  // 行情弹窗是全局的（挂在 App 里），这里只负责触发，不自己持有开关状态。
+  const openStockChart = useStockChartStore((state) => state.open);
 
   return (
     <div className="space-y-4">
@@ -170,13 +211,12 @@ export const MarketBriefPanel: React.FC<MarketBriefPanelProps> = ({ payload }) =
         <Card variant="bordered" padding="md">
           <div className="mb-1 flex flex-wrap items-baseline gap-2">
             <h3 className="text-sm font-semibold text-foreground">关注股票</h3>
-            <span className="text-xxs text-muted-text">由已确认的板块方向推断，非资讯原文内容</span>
+            <span className="text-xxs text-muted-text">由已确认的板块方向推断，非资讯原文内容 · 点个股名看实时行情与 K 线</span>
           </div>
           <ul className="mt-3 space-y-2">
             {result.watchList.map((item) => (
               <li key={`${item.name}-${item.sector}`} className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium text-foreground">{item.name}</span>
-                {item.code ? <span className="text-xxs tabular-nums text-muted-text">{item.code}</span> : null}
+                <WatchStockName item={item} onOpen={openStockChart} />
                 <Badge size="sm">{item.sector}</Badge>
                 <Badge variant={directionBadgeVariant(item.direction)} size="sm">
                   {directionLabel(item.direction)}

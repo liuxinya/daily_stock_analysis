@@ -1,8 +1,9 @@
 import type React from 'react';
-import { AlertTriangle, Sparkles } from 'lucide-react';
+import { AlertTriangle, CandlestickChart, Sparkles } from 'lucide-react';
 import type { UiTextKey } from '../../i18n/uiText';
 import type { Conclusion, StockCandidate, StockCandidates } from '../../types/industryFunds';
 import { cn } from '../../utils/cn';
+import { resolveStockChartCode, useStockChartStore } from '../../stores/stockChartStore';
 import { Badge } from '../common/Badge';
 import { InlineAlert } from '../common/InlineAlert';
 import { SectionCard } from '../common/SectionCard';
@@ -203,13 +204,35 @@ export const ConclusionSection: React.FC<Props> = ({
 
 const CandidateRow: React.FC<{ row: StockCandidate }> = ({ row }) => {
   const metrics = row.metrics ?? {};
+  const openStockChart = useStockChartStore((state) => state.open);
   // 领涨股未解析出真实代码时，后端会返回空串；历史快照里还可能残留 ``LEADER::`` 占位。
   // 两种都不该作为代码显示，退回「—」。
   const code = row.code && !row.code.startsWith('LEADER::') ? row.code : '—';
+  // 行情与图表接口只覆盖 A 股 / 场内基金，占位代码与非 6 位码都不给入口。
+  const chartCode = resolveStockChartCode(row.code);
   return (
     <tr className={cn('border-b border-border/30', row.flowWarning && 'bg-danger/5')}>
-      <td className="py-2 pr-3 font-mono text-xs text-secondary-text">{code}</td>
-      <td className="py-2 pr-3 font-medium text-foreground">{row.name}</td>
+      {chartCode ? (
+        <td colSpan={2} className="py-2 pr-3">
+          <button
+            type="button"
+            onClick={() => openStockChart(chartCode, row.name)}
+            aria-label={`查看 ${row.name}(${chartCode}) 的实时行情与 K 线`}
+            className="group inline-flex items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan/60"
+          >
+            <span className="font-mono text-xs text-secondary-text group-hover:text-cyan">{chartCode}</span>
+            <span className="font-medium text-foreground underline decoration-dotted underline-offset-4 group-hover:text-cyan">
+              {row.name}
+            </span>
+            <CandlestickChart className="h-3 w-3 text-muted-text group-hover:text-cyan" aria-hidden="true" />
+          </button>
+        </td>
+      ) : (
+        <>
+          <td className="py-2 pr-3 font-mono text-xs text-secondary-text">{code}</td>
+          <td className="py-2 pr-3 font-medium text-foreground">{row.name}</td>
+        </>
+      )}
       <td className="py-2 pr-3 text-xs text-secondary-text">
         <ul className="space-y-0.5">
           {row.reasons.map((reason) => (
