@@ -370,7 +370,8 @@ const FactorDetail: React.FC<{
                 <span key={`${row.code}-${index}`} className="tabular-nums">
                   <span className="text-secondary-text">{String(row.code ?? '')}</span>{' '}
                   <span className="text-foreground">{String(row.name ?? '')}</span>{' '}
-                  <span className={delta !== null && delta > 0 ? 'text-success' : 'text-danger'}>
+                  {/* A 股口径：份额净增（正）红、净减（负）绿，与 inOutTone 一致。 */}
+                  <span className={delta !== null && delta > 0 ? 'text-danger' : 'text-success'}>
                     {delta === null ? '—' : `${delta > 0 ? '+' : ''}${delta.toFixed(2)} 亿份`}
                   </span>
                 </span>

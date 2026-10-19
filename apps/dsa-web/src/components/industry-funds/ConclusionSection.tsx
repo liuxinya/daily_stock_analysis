@@ -17,10 +17,11 @@ type Props = {
   t: Translate;
 };
 
+// A 股口径：偏多=红、偏空=绿，与 verdictTone / inOutTone 保持整页一致。
 const STANCE_BADGE: Record<string, 'success' | 'default' | 'danger'> = {
-  bullish: 'success',
+  bullish: 'danger',
   neutral: 'default',
-  bearish: 'danger',
+  bearish: 'success',
 };
 
 /** 第三段：结论 —— 关注方向、关注个股、风险提示、免责声明。 */

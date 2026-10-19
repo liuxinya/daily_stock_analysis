@@ -1,6 +1,8 @@
 import type React from 'react';
 import { useMemo, useState } from 'react';
-import { ArrowDownUp, Info } from 'lucide-react';
+import { ArrowDownUp, Info, LayoutGrid, Table } from 'lucide-react';
+import { ResponsiveContainer, Treemap } from 'recharts';
+import type { TreemapNode } from 'recharts';
 import type { UiTextKey } from '../../i18n/uiText';
 import type { IndustryRow } from '../../types/industryFunds';
 import { cn } from '../../utils/cn';
@@ -12,6 +14,8 @@ import { formatPct, formatSignedYi, formatYi, inOutTone } from './format';
 type Translate = (key: UiTextKey) => string;
 
 type SortKey = 'net' | 'net5D' | 'changePct' | 'name';
+type ViewMode = 'table' | 'heatmap';
+type SizeMetric = 'turnover' | 'net' | 'inflow';
 
 type Props = {
   industries: IndustryRow[];
@@ -32,6 +36,8 @@ export const FundFlowSection: React.FC<Props> = ({ industries, disclaimer, sourc
   const [sortKey, setSortKey] = useState<SortKey>('net');
   const [descending, setDescending] = useState(true);
   const [showAll, setShowAll] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const [sizeMetric, setSizeMetric] = useState<SizeMetric>('turnover');
 
   const sorted = useMemo(() => {
     const rows = [...industries];
@@ -65,11 +71,26 @@ export const FundFlowSection: React.FC<Props> = ({ industries, disclaimer, sourc
       subtitle={t('industryFunds.sectionFundFlowHint')}
       actions={
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={inflowCount > industries.length / 2 ? 'success' : 'default'} size="sm">
+          {/* 多数行业净流入 = 偏多宽度，A 股口径用红；否则中性灰。 */}
+          <Badge variant={inflowCount > industries.length / 2 ? 'danger' : 'default'} size="sm">
             {t('industryFunds.inflowSummary')
               .replace('{inflow}', String(inflowCount))
               .replace('{total}', String(industries.length))}
           </Badge>
+          <div className="inline-flex overflow-hidden rounded-lg border border-border/60">
+            <ViewToggleButton
+              active={viewMode === 'table'}
+              onClick={() => setViewMode('table')}
+              icon={<Table className="h-3.5 w-3.5" aria-hidden="true" />}
+              label={t('industryFunds.viewTable')}
+            />
+            <ViewToggleButton
+              active={viewMode === 'heatmap'}
+              onClick={() => setViewMode('heatmap')}
+              icon={<LayoutGrid className="h-3.5 w-3.5" aria-hidden="true" />}
+              label={t('industryFunds.viewHeatmap')}
+            />
+          </div>
         </div>
       }
     >
@@ -81,7 +102,16 @@ export const FundFlowSection: React.FC<Props> = ({ industries, disclaimer, sourc
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      {viewMode === 'heatmap' ? (
+        <FundFlowHeatmap
+          industries={industries}
+          sizeMetric={sizeMetric}
+          onSizeMetricChange={setSizeMetric}
+          t={t}
+        />
+      ) : (
+        <>
+          <div className="overflow-x-auto">
         <table className="w-full min-w-[58rem] border-collapse text-sm">
           <thead>
             <tr className="border-b border-border/60 text-left text-xs text-secondary-text">
@@ -163,16 +193,18 @@ export const FundFlowSection: React.FC<Props> = ({ industries, disclaimer, sourc
       </div>
 
       {sorted.length > INITIAL_ROWS ? (
-        <button
-          type="button"
-          onClick={() => setShowAll(!showAll)}
-          className="mt-3 text-xs text-cyan transition-colors hover:text-cyan/80"
-        >
-          {showAll
-            ? t('industryFunds.showLess')
-            : t('industryFunds.showAll').replace('{count}', String(sorted.length))}
-        </button>
-      ) : null}
+            <button
+              type="button"
+              onClick={() => setShowAll(!showAll)}
+              className="mt-3 text-xs text-cyan transition-colors hover:text-cyan/80"
+            >
+              {showAll
+                ? t('industryFunds.showLess')
+                : t('industryFunds.showAll').replace('{count}', String(sorted.length))}
+            </button>
+          ) : null}
+        </>
+      )}
     </SectionCard>
   );
 };
@@ -203,3 +235,186 @@ const SortHeader: React.FC<{
     </Tooltip>
   </th>
 );
+
+const ViewToggleButton: React.FC<{
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+}> = ({ active, onClick, icon, label }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    aria-pressed={active}
+    className={cn(
+      'inline-flex items-center gap-1 px-2.5 py-1 text-xs transition-colors',
+      active ? 'bg-cyan/15 text-cyan' : 'text-secondary-text hover:text-foreground'
+    )}
+  >
+    {icon}
+    {label}
+  </button>
+);
+
+type SizeMetricDef = { key: SizeMetric; labelKey: UiTextKey; value: (row: IndustryRow) => number };
+
+// 面积指标只用「主力资金」口径下已有的字段：当前数据源（同花顺行业资金流落地页）
+// 没有全口径成交额 / 成交量 / 市值，不能照搬同花顺板块热力图那套 size 维度。
+const SIZE_METRICS: SizeMetricDef[] = [
+  {
+    key: 'turnover',
+    labelKey: 'industryFunds.metricTurnover',
+    value: (row) => (row.inflow ?? 0) + (row.outflow ?? 0),
+  },
+  { key: 'net', labelKey: 'industryFunds.metricNetAbs', value: (row) => Math.abs(row.net ?? 0) },
+  { key: 'inflow', labelKey: 'industryFunds.metricInflow', value: (row) => row.inflow ?? 0 },
+];
+
+type HeatNode = { name: string; size: number; net: number; changePct: number | null };
+
+const FundFlowHeatmap: React.FC<{
+  industries: IndustryRow[];
+  sizeMetric: SizeMetric;
+  onSizeMetricChange: (metric: SizeMetric) => void;
+  t: Translate;
+}> = ({ industries, sizeMetric, onSizeMetricChange, t }) => {
+  const metricDef = SIZE_METRICS.find((m) => m.key === sizeMetric) ?? SIZE_METRICS[0];
+
+  const data = useMemo<HeatNode[]>(
+    () =>
+      industries
+        .map((row) => ({
+          name: row.name,
+          size: Math.max(0, metricDef.value(row)),
+          net: row.net ?? 0,
+          changePct: row.changePct,
+        }))
+        .filter((node) => node.size > 0)
+        .sort((a, b) => b.size - a.size),
+    [industries, metricDef]
+  );
+
+  // 深浅按「当日净额」的相对强度，最大绝对值兜底为 1，避免除零。
+  const maxNetAbs = useMemo(
+    () => data.reduce((max, node) => Math.max(max, Math.abs(node.net)), 0) || 1,
+    [data]
+  );
+
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <label className="flex items-center gap-2 text-xs text-secondary-text">
+          {t('industryFunds.heatmapMetric')}
+          <select
+            value={sizeMetric}
+            onChange={(e) => onSizeMetricChange(e.target.value as SizeMetric)}
+            className="rounded-lg border border-border/60 bg-elevated px-2 py-1 text-xs text-foreground"
+          >
+            {SIZE_METRICS.map((metric) => (
+              <option key={metric.key} value={metric.key}>
+                {t(metric.labelKey)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="flex items-center gap-3 text-xs text-secondary-text">
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: 'hsl(var(--color-danger))' }}
+            />
+            {t('industryFunds.legendInflow')}
+          </span>
+          <span className="flex items-center gap-1">
+            <span
+              className="inline-block h-2.5 w-2.5 rounded-sm"
+              style={{ backgroundColor: 'hsl(var(--color-success))' }}
+            />
+            {t('industryFunds.legendOutflow')}
+          </span>
+        </div>
+      </div>
+
+      {data.length === 0 ? (
+        <p className="py-10 text-center text-sm text-secondary-text">
+          {t('industryFunds.heatmapEmpty')}
+        </p>
+      ) : (
+        <div className="h-[28rem] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <Treemap
+              data={data}
+              dataKey="size"
+              nameKey="name"
+              isAnimationActive={false}
+              content={(node) => renderHeatCell(node, maxNetAbs, metricDef, t)}
+            />
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      <p className="mt-3 text-xs text-secondary-text">{t('industryFunds.heatmapNote')}</p>
+    </div>
+  );
+};
+
+function renderHeatCell(
+  node: TreemapNode,
+  maxNetAbs: number,
+  metricDef: SizeMetricDef,
+  t: Translate
+): React.ReactElement {
+  const { x, y, width, height, depth } = node;
+  // 扁平数据下根节点 depth===0 会铺满整个容器，跳过以免盖住瓦片。
+  if (depth === 0 || !(width > 0) || !(height > 0)) {
+    return <g />;
+  }
+  const name = typeof node.name === 'string' ? node.name : '';
+  const net = typeof node.net === 'number' ? node.net : 0;
+  const size = typeof node.size === 'number' ? node.size : 0;
+  const changePct = typeof node.changePct === 'number' ? node.changePct : null;
+  // A 股口径：净流入(正)红、净流出(负)绿，与 inOutTone 一致；深浅随净额强度。
+  const colorVar = net > 0 ? '--color-danger' : net < 0 ? '--color-success' : '--border';
+  const intensity = Math.min(1, Math.abs(net) / maxNetAbs);
+  const fillOpacity = net === 0 ? 0.25 : 0.22 + 0.63 * intensity;
+  const showName = width > 44 && height > 26;
+  const showValue = width > 54 && height > 44;
+  return (
+    <g>
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        fill={`hsl(var(${colorVar}))`}
+        fillOpacity={fillOpacity}
+        stroke="hsl(var(--background))"
+        strokeWidth={1}
+      >
+        <title>{`${name}｜${t('industryFunds.colNet')} ${formatSignedYi(net, 2)}｜${t('industryFunds.colChange')} ${formatPct(changePct, 2, true)}｜${t(metricDef.labelKey)} ${formatYi(size, 2)}`}</title>
+      </rect>
+      {showName ? (
+        <text
+          x={x + 6}
+          y={y + 17}
+          fontSize={11}
+          fill="hsl(var(--foreground))"
+          className="pointer-events-none"
+        >
+          {name}
+        </text>
+      ) : null}
+      {showValue ? (
+        <text
+          x={x + 6}
+          y={y + 32}
+          fontSize={10}
+          fill="hsl(var(--secondary-text))"
+          className="pointer-events-none"
+        >
+          {formatYi(size, 1)}
+        </text>
+      ) : null}
+    </g>
+  );
+}

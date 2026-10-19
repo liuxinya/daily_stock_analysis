@@ -55,24 +55,28 @@ export function formatIstTime(value: string | null | undefined): string {
   return value.replace('T', ' ').slice(0, 19);
 }
 
-/** 资金净额的方向色调。0 视为中性，避免满屏红绿。 */
+/**
+ * 资金净额的方向色调。A 股口径（红涨绿跌）：正数（净流入）用红、负数（净流出）用绿，
+ * 0 视为中性，避免满屏红绿。注意 text-danger 是红、text-success 是绿，这里是有意的
+ * 「正红负绿」，不是写反了。
+ */
 export function inOutTone(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value) || value === 0) {
     return 'text-secondary-text';
   }
-  return value > 0 ? 'text-success' : 'text-danger';
+  return value > 0 ? 'text-danger' : 'text-success';
 }
 
-/** 复合分的判定色调。 */
+/** 复合分的判定色调。A 股口径：偏多用红、偏空用绿。 */
 export function verdictTone(verdict: string): string {
-  if (verdict === 'bullish') return 'text-success';
-  if (verdict === 'bearish') return 'text-danger';
+  if (verdict === 'bullish') return 'text-danger';
+  if (verdict === 'bearish') return 'text-success';
   return 'text-secondary-text';
 }
 
 export function verdictBorder(verdict: string): string {
-  if (verdict === 'bullish') return 'border-success/35';
-  if (verdict === 'bearish') return 'border-danger/35';
+  if (verdict === 'bullish') return 'border-danger/35';
+  if (verdict === 'bearish') return 'border-success/35';
   return 'border-border/60';
 }
 

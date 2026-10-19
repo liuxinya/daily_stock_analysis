@@ -359,4 +359,18 @@ describe('IndustryFundsPage', () => {
     await screen.findByText('资金流向');
     expect(screen.queryByText(/新鲜度窗口/)).not.toBeInTheDocument();
   });
+
+  it('toggles the fund-flow section to a heatmap with a size-metric selector', async () => {
+    mockGetOverview.mockResolvedValue(buildOverview());
+
+    renderPage();
+    await screen.findByText('资金流向');
+
+    // 切到热力图：出现面积指标下拉、可选的主力口径指标，以及数据口径说明。
+    fireEvent.click(screen.getByRole('button', { name: /热力图/ }));
+    expect(await screen.findByText('面积指标')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '主力成交额(流入+流出)' })).toBeInTheDocument();
+    // 口径说明必须明说当前数据源没有全口径成交额/成交量/市值，避免误读为真实成交数据。
+    expect(screen.getByText(/暂无全口径成交额\/成交量\/市值/)).toBeInTheDocument();
+  });
 });
