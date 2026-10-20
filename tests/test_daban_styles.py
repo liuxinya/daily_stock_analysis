@@ -8,7 +8,7 @@ from src.services.daban import styles
 from tests.daban_fixtures import metrics, rules
 
 
-def _cand(code, mode="M4", *, score=80.0, role="front", signals=None, conditions=None, origin="zt"):
+def _cand(code, mode="M2", *, score=80.0, role="front", signals=None, conditions=None, origin="zt"):
     return {
         "code": code, "name": f"股{code}", "mode": mode, "mode_label": mode, "role": role, "role_label": role,
         "theme": "机器人", "theme_name": "机器人", "theme_is_main": True, "origin": origin,
@@ -161,3 +161,30 @@ class TestVerdict:
         theme = {"name": "机器人", "zt_count": 21, "max_boards": 5, "novelty": "same", "story_space": None}
         v = _verdict(m=metrics(zt_count=52), themes=[theme], lanes=lanes)
         assert v["preferred"] == "both" and v["label"] == "两派共识日"
+
+
+class TestChenGatesFollowTheArticle:
+    """陈小群线的门控只放行原文阶段表里写到的操作。"""
+
+    def test_first_board_only_in_warm_and_only_for_new_themes(self):
+        new = _cand("600001", "M4", conditions={"new_theme": True}, signals=[{"text": "x", "principle_ids": ["C15"]}])
+        old = _cand("600002", "M4", conditions={"new_theme": False}, signals=[{"text": "x", "principle_ids": ["C15"]}])
+        warm = _lane("chen", [new, old], stage="warm", kobe="low_shock")
+        assert [p["code"] for p in warm["trial"]] == ["600001"]
+        assert [p["code"] for p in warm["watch"]] == ["600002"]
+        for stage in ("ferment", "climax"):
+            lane = _lane("chen", [new], stage=stage)
+            assert not lane["actionable"] and not lane["trial"]
+
+    def test_catch_up_never_enters_chen_lane(self):
+        cand = _cand("600001", "M3", signals=[{"text": "x", "principle_ids": ["C13"]}])
+        for stage in ("warm", "ferment", "climax"):
+            lane = _lane("chen", [cand], stage=stage)
+            assert not (lane["actionable"] + lane["trial"] + lane["watch"])
+
+    def test_climax_only_locks_leaders(self):
+        leader = _cand("600001", "M1", role="total_leader", signals=[{"text": "x", "principle_ids": ["C23"]}])
+        w2s = _cand("600002", "M2", signals=[{"text": "x", "principle_ids": ["C04"]}])
+        lane = _lane("chen", [leader, w2s], stage="climax")
+        assert [p["code"] for p in lane["actionable"]] == ["600001"]
+        assert [p["code"] for p in lane["watch"]] == ["600002"]

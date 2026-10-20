@@ -108,3 +108,68 @@ class DabanHistoryResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: List[DabanHistoryItem] = Field(default_factory=list)
+
+
+class DabanLiveHit(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    code: str
+    name: str = ""
+    style: str
+    style_label: str = ""
+    action: str
+    action_label: str = ""
+    position_pct: int = 0
+    first_time: str = ""
+    last_time: str = ""
+    open_num: int = 0
+    sealed: Optional[bool] = None
+    limit_price: Optional[float] = None
+    price: Optional[float] = None
+    change_pct: Optional[float] = None
+    turnover_rate: Optional[float] = None
+    circ_mv: Optional[float] = None
+    seal_amount: Optional[float] = None
+    seal_ratio: Optional[float] = None
+    reason: str = ""
+    high_days: str = ""
+    limit_up_type: str = ""
+    theme: str = ""
+    theme_rank: Optional[int] = None
+    theme_main: bool = False
+    novelty: str = ""
+    peers: int = 0
+    peer_codes: List[str] = Field(default_factory=list)
+    reasons: List[Dict[str, Any]] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+    phase: Optional[str] = None
+
+
+class DabanLiveResponse(BaseModel):
+    """盘中雷达。``trading`` 为 False 时数据是最近一次收盘的，页面要如实标注。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    ok: bool = True
+    error: Optional[str] = None
+    note: Optional[str] = None
+    generated_at: str = ""
+    trade_date: str = ""
+    trading: bool = False
+    stale: bool = False
+    duration_ms: int = 0
+    previous: Dict[str, Any] = Field(default_factory=dict)
+    gate_labels: Dict[str, Any] = Field(default_factory=dict)
+    stats: Dict[str, Any] = Field(default_factory=dict)
+    hits: List[DabanLiveHit] = Field(default_factory=list)
+    blocked: List[Dict[str, Any]] = Field(default_factory=list)
+    themes: List[Dict[str, Any]] = Field(default_factory=list)
+    events: Dict[str, Any] = Field(default_factory=dict)
+    degraded_reasons: List[str] = Field(default_factory=list)
+
+
+class DabanForecastResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+    summary: Dict[str, Any] = Field(default_factory=dict)

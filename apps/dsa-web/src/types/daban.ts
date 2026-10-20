@@ -289,6 +289,9 @@ export type DabanOverview = {
   consensusCodes: string[];
   excluded: DabanExcluded[];
   review: DabanReview | null;
+  liveStats?: Record<DabanStyle, { days: number; picks: number; sealedRate: number | null; openMean: number | null; closeMean: number | null; winRate: number | null }>;
+  forecastReview?: { groups: Record<string, { n: number; touchRate: number | null; sealRate: number | null }>; days: number; total: number };
+  liveReview?: { calls: number; sealed: number; actionable: number; phase: { chen?: string; kobe?: string } } | null;
   trackRecord: DabanTrackRecord;
   conclusion: {
     summary: string;
@@ -353,4 +356,103 @@ export type DabanHistoryItem = {
   yztPremium: number | null;
   preferredStyle: DabanStyle | 'both' | null;
   intraday: boolean;
+};
+
+export type DabanLiveHit = {
+  code: string;
+  name: string;
+  style: DabanStyle;
+  styleLabel: string;
+  action: DabanAction;
+  actionLabel: string;
+  positionPct: number;
+  /** sealed = 当前封着；opened = 触板后已炸开；missing = 已锁定但这一轮上游没返回它 */
+  status: 'sealed' | 'opened' | 'missing';
+  /** 先到先得分到的名额序号（1 起）；没分到名额为 null */
+  slot: number | null;
+  /** 名额锁定的时刻（HH:MM:SS）；本轮新分配的为 null */
+  lockedAt: string | null;
+  firstTime: string;
+  lastTime: string;
+  openNum: number;
+  sealed: boolean | null;
+  limitPrice: number | null;
+  price: number | null;
+  changePct: number | null;
+  turnoverRate: number | null;
+  circMv: number | null;
+  sealAmount: number | null;
+  sealRatio: number | null;
+  reason: string;
+  highDays: string;
+  limitUpType: string;
+  theme: string;
+  themeRank: number | null;
+  themeMain: boolean;
+  novelty: string;
+  peers: number;
+  peerCodes: string[];
+  reasons: DabanCited[];
+  notes: string[];
+  phase: string | null;
+};
+
+export type DabanLiveEvent = { code: string; name: string; type: string; date: string; time: string; orderAmount: number | null };
+
+export type DabanLiveLane = {
+  phaseKey: string;
+  cap: number;
+  used: number;
+  picks: number;
+  locked: number;
+  maxPicks: number;
+  sellRules: DabanCited[];
+};
+
+export type DabanLive = {
+  ok: boolean;
+  error: string | null;
+  note: string | null;
+  generatedAt: string;
+  tradeDate: string;
+  trading: boolean;
+  /** 涨停池不是今天的（盘前 / 非交易日回看上一交易日） */
+  replay: boolean;
+  stale: boolean;
+  pollSec: number;
+  durationMs: number;
+  lanes: Partial<Record<DabanStyle, DabanLiveLane>>;
+  previous: {
+    available?: boolean;
+    tradeDate?: string;
+    chenStage?: string;
+    chenLabel?: string;
+    kobeGate?: string;
+    kobeLabel?: string;
+    reason?: string;
+    mainThemes?: { name: string; rank: number; novelty: string }[];
+  };
+  gateLabels: {
+    kobe?: string;
+    chen?: string;
+    kobeAction?: string | null;
+    chenAction?: string | null;
+    source?: 'review' | 'computed';
+    tradeDate?: string;
+  };
+  stats: { limitUp?: number; firstBoards?: number; firstTouches?: number; broken?: number; actionable?: number; trial?: number };
+  hits: DabanLiveHit[];
+  blocked: { code: string; name: string; style: DabanStyle; theme: string; reason: string }[];
+  themes: DabanTheme[];
+  events: {
+    recent?: DabanLiveEvent[];
+    counts?: { first?: number; back?: number; failed?: number };
+  };
+  degradedReasons: string[];
+};
+
+export type DabanForecastSummary = {
+  groups: Record<string, { n: number; touchRate: number | null; sealRate: number | null }>;
+  days: number;
+  total: number;
 };

@@ -429,12 +429,141 @@ def fetch_em_pool(kind: str, trade_date: Any, *, timeout: Optional[float] = None
     return [normalize_em_row(kind, item) for item in pool if isinstance(item, dict)]
 
 
+# ---------------------------------------------------------------------- 盘中事件流
+
+
+def fetch_ths_changes(*, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
+    """同花顺涨停数据中心的封板事件流（页面每 5 秒轮询的那个接口）。
+
+    返回当天全部事件：``FIRST_LIMIT`` 首次封板、``LIMIT_BACK`` 回封、``LIMIT_FAILED`` 炸板。
+    ``time`` 是 epoch 秒；开盘前可能还是上一交易日的事件，调用方要按日期过滤。
+    """
+    data = _ths_payload("change", {"_": int(datetime.now().timestamp() * 1000)}, timeout=timeout)
+    if not isinstance(data, list):
+        raise LimitUpUpstreamError("同花顺 change 的 data 不是列表")
+    events = []
+    for item in data:
+        if not isinstance(item, dict) or not item.get("code"):
+            continue
+        try:
+            epoch = int(float(item.get("time")))
+        except (TypeError, ValueError):
+            continue
+        moment = datetime.fromtimestamp(epoch, tz=_BEIJING)
+        events.append({
+            "code": str(item["code"]).strip(),
+            "name": str(item.get("name") or "").strip(),
+            "type": str(item.get("type") or "").strip(),
+            "date": moment.strftime("%Y-%m-%d"),
+            "time": moment.strftime("%H%M%S"),
+            "order_amount": _num(item.get("order_amount")),
+        })
+    return events
+
+
+_EM_CHANGE_TYPES = {"seal": (4, "FIRST_LIMIT"), "open": (16, "LIMIT_FAILED")}
+
+
+def fetch_em_changes(kind: str, *, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
+    """东财盘口异动：``seal`` 封涨停板（type 4）/ ``open`` 打开涨停板（type 16）。
+
+    东财只给 ``HHMMSS`` 不给日期，开盘前返回的可能是上一交易日的数据，调用方要按时段过滤。
+    """
+    if kind not in _EM_CHANGE_TYPES:
+        raise ValueError(f"未知的东财异动类型: {kind}")
+    type_id, normalized = _EM_CHANGE_TYPES[kind]
+    payload = _get_json(
+        f"{_EM_BASE}/getAllStockChanges",
+        {"type": type_id, "pageindex": 0, "pagesize": 5000, "ut": _EM_UT, "dpt": "wzchanges"},
+        timeout=timeout,
+    )
+    rows = ((payload.get("data") or {}).get("allstock")) or []
+    return [
+        {
+            "code": str(row.get("c") or "").strip(),
+            "name": str(row.get("n") or "").strip(),
+            "type": normalized,
+            "date": "",
+            "time": int_to_hhmmss(row.get("tm")),
+            "order_amount": None,
+        }
+        for row in rows
+        if isinstance(row, dict) and row.get("c")
+    ]
+
+
+# ---------------------------------------------------------------------- 腾讯批量行情
+
+
+_TENCENT_URL = "https://qt.gtimg.cn/q="
+_TENCENT_BATCH = 600
+
+
+def tencent_symbol(code: str) -> str:
+    text = str(code or "").strip()
+    return ("sh" if text.startswith(("6", "9")) else "sz") + text
+
+
+def parse_tencent_line(line: str) -> Optional[Dict[str, Any]]:
+    """``v_sh600000="1~名称~代码~现价~昨收~今开~...";`` → 行情 dict。字段位置 2026-10-20 实测：
+
+    3 现价、4 昨收、5 今开、20 卖一量、30 时间戳（YYYYMMDDHHMMSS）、33 最高、34 最低、
+    38 换手率、44 流通市值（亿）、47 涨停价、48 跌停价。
+    """
+    if "~" not in line:
+        return None
+    fields = line.split("~")
+    if len(fields) < 49:
+        return None
+    try:
+        return {
+            "code": fields[2],
+            "name": fields[1],
+            "price": float(fields[3]),
+            "prev_close": float(fields[4]),
+            "open": float(fields[5]),
+            "sell1_volume": int(float(fields[20] or 0)),
+            "time": fields[30],
+            "high": float(fields[33]),
+            "low": float(fields[34]),
+            "turnover_rate": _num(fields[38]),
+            "circ_mv": (_num(fields[44]) or 0) * 1e8 or None,
+            "limit_up": float(fields[47]),
+            "limit_down": float(fields[48]),
+        }
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_tencent_quotes(codes: List[str], *, timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
+    """批量行情快照（腾讯，无 token），每批 600 只。单批失败只少这一批，不整体报错。"""
+    out: Dict[str, Dict[str, Any]] = {}
+    symbols = [tencent_symbol(c) for c in codes if c]
+    for start in range(0, len(symbols), _TENCENT_BATCH):
+        batch = symbols[start:start + _TENCENT_BATCH]
+        try:
+            response = requests.get(_TENCENT_URL + ",".join(batch), headers=_HEADERS,
+                                    timeout=float(timeout or _DEFAULT_TIMEOUT))
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            logger.warning("[腾讯行情] 批量取数失败（%d 只）: %s", len(batch), exc)
+            continue
+        for line in response.text.split(";"):
+            quote = parse_tencent_line(line)
+            if quote:
+                out[quote["code"]] = quote
+    return out
+
+
 __all__ = [
     "EM_POOLS",
     "THS_POOLS",
     "LimitUpUpstreamError",
     "epoch_to_hhmmss",
+    "fetch_em_changes",
     "fetch_em_pool",
+    "fetch_tencent_quotes",
+    "fetch_ths_changes",
     "fetch_ths_blocks",
     "fetch_ths_ladder",
     "fetch_ths_pool",
@@ -445,6 +574,8 @@ __all__ = [
     "normalize_em_row",
     "normalize_ths_row",
     "parse_high_days",
+    "parse_tencent_line",
+    "tencent_symbol",
     "to_iso_date",
     "to_ymd",
 ]

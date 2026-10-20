@@ -1698,6 +1698,14 @@ def main() -> int:
                 config_provider=_reload_runtime_config,
             ))
 
+            # 「我是打板王」盘中雷达：交易时段后台轮询、留档与推送
+            from src.services.daban.live import build_live_background_tasks
+
+            background_tasks.extend(build_live_background_tasks(
+                config,
+                config_provider=_reload_runtime_config,
+            ))
+
             schedule_kwargs = {
                 "task": scheduled_task,
                 "schedule_time": config.schedule_time,

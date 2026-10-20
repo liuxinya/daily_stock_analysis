@@ -16,10 +16,12 @@ from fastapi import APIRouter, Body, HTTPException, Query
 
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.daban import (
+    DabanForecastResponse,
     DabanHistoryResponse,
     DabanJobModel,
     DabanJobSubmitRequest,
     DabanJobSubmitResponse,
+    DabanLiveResponse,
     DabanOverviewResponse,
     DabanPushResponse,
 )
@@ -151,6 +153,51 @@ def get_active_job() -> DabanJobModel:
     if job is None:
         raise _not_found("当前没有进行中的生成任务")
     return DabanJobModel(**job)
+
+
+@router.get(
+    "/live",
+    response_model=DabanLiveResponse,
+    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Intraday first-board radar (reads live upstream, cached a few seconds)",
+)
+def get_live(force: bool = Query(False, description="跳过进程内缓存")) -> DabanLiveResponse:
+    """盘中首板雷达。**只给行动级别与事实，不打分**：回测显示封板时刻可知的信息没有预测力。"""
+    from src.config import get_config
+
+    if not bool(getattr(get_config(), "daban_enabled", True)):
+        raise _disabled(DabanUnavailableError("「我是打板王」已关闭"))
+    if not bool(getattr(get_config(), "daban_live_enabled", True)):
+        raise _disabled(DabanUnavailableError("盘中雷达已通过 DABAN_LIVE_ENABLED 关闭"))
+    try:
+        from src.services.daban.live import LiveRadarService
+
+        payload = LiveRadarService().snapshot(force=force)
+    except Exception as exc:
+        raise _internal_error("Read daban live radar failed", exc)
+    if not payload.get("ok"):
+        raise HTTPException(status_code=503, detail={"error": "upstream_unavailable",
+                                                     "message": payload.get("error") or "盘中数据源不可用"})
+    return DabanLiveResponse(**payload)
+
+
+@router.get(
+    "/forecast",
+    response_model=DabanForecastResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="First-board forecast candidates (tracking only, not recommendations)",
+)
+def get_forecast(limit: int = Query(20, ge=5, le=120)) -> DabanForecastResponse:
+    """首板预判的向前验证记录：还没有足够样本时不放进页面的推荐区。"""
+    try:
+        from src.repositories.daban_repo import DabanRepository
+        from src.services.daban.forecast import summarize_forecasts
+
+        repo = DabanRepository()
+        rows = repo.evaluated_forecasts(limit_days=limit)
+        return DabanForecastResponse(items=rows, summary=summarize_forecasts(rows))
+    except Exception as exc:
+        raise _internal_error("Read daban forecast failed", exc)
 
 
 @router.post(

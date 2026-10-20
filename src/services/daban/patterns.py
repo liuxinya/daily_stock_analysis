@@ -95,17 +95,17 @@ class CandidateBuilder:
                 "C13", "C14",
             )
             if theme.get("premium") is not None and theme["premium"] > 0:
-                _add(f"题材内昨日涨停今日平均 {theme['premium']:+.1f}%，赚钱效应在延续", "K24", "C03")
+                _add(f"题材内昨日涨停今日平均 {theme['premium']:+.1f}%，赚钱效应在延续", "K24", "C20")
         if role in (ROLE_TOTAL_LEADER, ROLE_THEME_LEADER):
-            _add("绝对高位做龙头", "K11")
+            _add("绝对高位做龙头", "K33")
         elif 1 <= boards <= 2:
-            _add(f"{boards} 板，绝对低位（不碰中位股）", "K11")
+            _add(f"{boards} 板，绝对低位（不碰中位股）", "K33", "K11")
         price, circ = row.get("price"), row.get("circ_mv")
         if price is not None and circ and price <= 15 and circ <= 80e8:
             _add(f"股价 {price:.2f} 元、流通市值 {circ / 1e8:.0f} 亿，低价小盘", "K23")
         suc = row.get("suc_rate")
         if suc is not None and suc >= 0.7:
-            _add(f"历史封板率 {suc:.0%}，股性活跃", "K25")
+            _add(f"历史封板成功率 {suc:.0%}（同花顺口径，近似股性）", "K25")
         rank = self.ctx.get("hot_rank", {}).get(row.get("code"))
         if rank is not None and rank <= 50:
             _add(f"人气榜第 {rank} 名，人气带来流动性溢价", "K01")
@@ -211,13 +211,14 @@ class CandidateBuilder:
 # ---------------------------------------------------------------------- 触发 / 放弃条件模板
 
 _M2_TRIGGERS = [
-    _sig("竞价在平盘附近（-3%～+2%）由负转正，量能 ≥ 昨日同期 3 倍", "C04", "K28"),
-    _sig("开盘 5 分钟内快速拉升 ≥7%，是被买上去的而不是竞价高开", "C04", "K28"),
+    _sig("集合竞价从负转正，量能 ≥ 前一日同期 3 倍", "C04"),
+    _sig("开盘 5 分钟内快速拉升，不低于 7%", "C04"),
+    _sig("是盘中被买上去的，不是竞价高开", "K28"),
     _sig("同题材有股同步走强（板块效应）", "C04"),
     _sig("只能扫板：弱转强缩量，犹豫就买不到", "K28"),
 ]
 _M2_ABANDON = [
-    _sig("竞价大幅高开（> +5%）放弃：做盘痕迹太明显", "K28"),
+    _sig("竞价高开放弃：做盘迹象太明显（高开幅度阈值为系统参数）", "K28"),
     _sig("板块无跟随的孤立拉升放弃", "C04"),
     _sig("弱转强次日、强转强第三天一般是卖点，别恋战", "K27"),
 ]
@@ -271,7 +272,6 @@ def generate_candidates(ctx: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List
     rules = ctx["rules"]
     death = float(rules.get("death_turnover", 70.0))
     late = str(rules.get("weak_late_time", "143000"))
-    early = str(rules.get("early_seal_time", "100000"))
     max_height = int(ctx["metrics"].get("max_height") or 0)
     roles = ctx["roles"]
 
@@ -314,7 +314,7 @@ def generate_candidates(ctx: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List
         if role in (ROLE_TOTAL_LEADER, ROLE_THEME_LEADER):
             consistent = yizi or ((turnover or 0) < 3 and (row.get("first_time") or "999999") <= "093500")
             label = "全市场最高板" if role == ROLE_TOTAL_LEADER else f"主线「{theme['name'] if theme else ''}」最高板"
-            signals = [_sig(f"{label}（{boards} 板），辨识度最高", "C13", "K22")]
+            signals = [_sig(f"{label}（{boards} 板），辨识度最高", "C13", "K33")]
             if consistent:
                 signals.append(_sig("今日一致（一字 / 缩量秒板）：一致顶一字的走不远，等分歧再介入", "K14"))
                 triggers = [_sig("等分歧：开板换手、或低开承接后再介入，不追一字", "K14", "K07")]
@@ -323,7 +323,7 @@ def generate_candidates(ctx: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List
                 triggers = [_sig("次日分歧时介入：打板或低吸都可以，看好、分歧、买入", "K07")]
             triggers.append(_sig("只锁主线龙头；缩量加速时分批减仓", "C06"))
             if boards >= 6:
-                signals.append(_sig("连板高度 ≥6，打开了市场空间", "C03"))
+                signals.append(_sig("连板高度 ≥6，打开了市场空间", "C18"))
             b.add(
                 row, MODE_LEADER, role=role, theme_key=theme_key, origin="zt",
                 signals=signals, triggers=triggers,
@@ -362,7 +362,6 @@ def generate_candidates(ctx: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List
                     f"流通市值 {_fmt_yi(row.get('circ_mv'))}，够低价够小盘",
                     "K20", "K23",
                 ),
-                _sig("高潮期后排加速补涨，但跟风仓位不超过 10%", "C01", "C09"),
             ]
             if leader:
                 signals.append(_sig(f"题材龙头 {leader['name']}（{leader['boards']} 板）已打出空间，眼红效应", "K03"))
@@ -372,36 +371,51 @@ def generate_candidates(ctx: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List
                 row, MODE_CATCH_UP, role=role, theme_key=theme_key, origin="zt",
                 signals=signals,
                 triggers=[
-                    _sig("眼快手快：竞价或开盘即参与，稍慢一步就买不到", "K03"),
-                    _sig("仓位按跟风票控制（≤10%）", "C09"),
+                    _sig("眼快手快：竞价或开盘即参与，稍慢一步就买不到", "K34"),
                 ],
                 abandon=[_sig("低位补涨隔日不赚钱、龙头低吸不反包：补涨结束，停止参与", "K04")],
                 conditions={"theme_profit": _theme_profit(theme), **flags},
             )
 
-        # M4 首板挖掘 / 一进二
+        # M4 一进二：今天首板，次日打二板。原文只给了定位（科比 #12「低位就是做首板或者一进二」，
+        # 陈小群回暖期「聚焦新题材首板/二板」），没有给选股标准；这里只按原文做筛选，
+        # 首封时间等不是原文观点的信息放进 facts，不挂出处。
         first_board = boards == 1 and role != ROLE_FOLLOWER and theme and (is_main or theme.get("novelty") == "new")
         if first_board and yizi:
             b.reject(row, "一字首板：买不到，次日接力资金也不友好", "K29", role=role)
         elif first_board:
-            signals = [
-                _sig(
-                    f"「{theme['name']}」{'主线' if is_main else '新题材'}的换手首板，绝对低位",
-                    "K11", "K12", "C01",
-                ),
-            ]
-            if (row.get("first_time") or "999999") <= early:
-                signals.append(_sig(f"首封 {row['first_time'][:2]}:{row['first_time'][2:4]}，封板早", "K31"))
+            is_new = theme.get("novelty") == "new"
+            signals = [_sig(f"「{theme['name']}」{'主线' if is_main else '新题材'}的换手首板：绝对低位做首板 / 一进二", "K33")]
+            if is_new:
+                signals.append(_sig(f"「{theme['name']}」是近 10 日主线之外的新题材", "C15"))
+            notes = ["回测：一进二过去一年整体次日溢价为负，只作试错（见 docs/daban-king.md）"]
+            if row.get("first_time"):
+                notes.append(f"首封 {row['first_time'][:2]}:{row['first_time'][2:4]}（系统补充信息，非原文观点）")
+            # 原文与回测都支持的放弃条件：尾盘板（科比 #33 算弱板）、高价股（#27 低价为王）只观察。
+            cap_action = None
+            if (row.get("last_time") or "") >= late:
+                signals.append(_sig("末次封板在尾盘：尾盘偷鸡板也算弱板，只观察", "K27"))
+                cap_action = "watch"
+            price = row.get("price")
+            if price is not None and price >= float(rules.get("o12_max_price", 40.0)):
+                signals.append(_sig(f"股价 {price:.2f} 元偏高：妖股大多是低价股，只观察", "K23"))
+                cap_action = "watch"
             b.add(
                 row, MODE_FIRST_BOARD, role=role, theme_key=theme_key, origin="zt",
                 signals=signals,
                 triggers=[
-                    _sig("次日确认题材仍在扩散（同题材新增涨停）再打二板", "C12", "K12"),
+                    _sig("次日确认题材仍在扩散（同题材新增涨停）再打二板，不提前预判", "C12", "C22"),
                     _sig("复盘时查首板新闻，判断故事能不能继续讲", "K31", "K10"),
                 ],
-                abandon=[_sig("次日首板股集体没有溢价（昨日涨停今日表现差）时放弃", "K24")],
-                conditions=flags,
+                abandon=[
+                    _sig("次日一字或高开 ≥9% 不追：一字板对接力资金很不友好（回测同样为负）", "K29"),
+                    _sig("昨日涨停今日普遍没有溢价（亏钱效应）时放弃", "K24", "C20"),
+                ],
+                conditions={**flags, "new_theme": is_new},
+                notes=notes,
             )
+            if cap_action:
+                b.candidates[(row["code"], MODE_FIRST_BOARD)]["cap_action"] = cap_action
 
         # M5 反包首板（日 K 确认）
         if boards == 1 and int(row.get("hd_boards") or 0) >= 3:
@@ -419,11 +433,11 @@ def generate_candidates(ctx: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List
             b.add(
                 row, MODE_SWITCH, role=role, theme_key=theme_key, origin="zt",
                 signals=[
-                    _sig(f"「{theme['name']}」与近 10 日主线完全不同，是新共识的候选（新题材萌芽）", "K05", "C01"),
-                    _sig("出现在高位分歧 / 主跌之后，正是新题材的接入点", "K12"),
+                    _sig(f"「{theme['name']}」与近 10 日主线完全不同，是新共识的候选（新题材萌芽）", "K05", "C16"),
+                    _sig("出现在高位分歧 / 主跌之后，正是新题材的接入点", "K12", "K35"),
                 ],
                 triggers=[
-                    _sig("控制仓位试错，次日题材有扩散（新增涨停）再加", "K05", "C12"),
+                    _sig("控制仓位试错，次日题材有扩散（新增涨停）再加", "K38", "C12"),
                 ],
                 abandon=[_sig("次日题材无扩散、走势与预期不符，坚决止损", "K17")],
                 conditions=flags,
@@ -451,12 +465,12 @@ def generate_candidates(ctx: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List
             b.add(
                 base, MODE_LEADER, role=leader_role, theme_key=theme_key, origin="previous",
                 signals=[
-                    _sig(f"昨日 {y_boards} 板的全市场最高标，今日断板但收涨（{change:+.1f}%），是龙头的分歧日", "K22", "C05"),
+                    _sig(f"昨日 {y_boards} 板的全市场最高标，今日断板但收涨（{change:+.1f}%），是龙头的分歧日", "K22", "K07"),
                     _sig("有地位的龙头不涨停也可以锁一下仓，看反包", "K21"),
                 ],
                 triggers=[
-                    _sig("次日以涨停反包确认二波，再按龙头对待", "K22", "C07"),
-                    _sig("分歧中缩量止跌时可低吸，次日不反包就止损", "C05"),
+                    _sig("次日以涨停反包确认二波，再按龙头对待", "K22"),
+                    _sig("看好、分歧、买入：分歧日打板或低吸都可以", "K07"),
                 ],
                 abandon=[_sig("次日不反包、继续走弱：龙头见顶，转而关注低位新题材", "K04", "K12")],
                 conditions={**flags, "total_leader": still_top},

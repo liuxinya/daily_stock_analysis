@@ -523,6 +523,68 @@ class DabanPick(Base):
     )
 
 
+class DabanLiveHit(Base):
+    """盘中首板雷达给出的「可执行 / 试错」标的，次一交易日收盘后回填兑现情况。
+
+    盘中第一次出现就留档（``origin=live``），之后不改动作与仓位；收盘复盘再按同一口径补录盘中没记到的
+    （``origin=close``），并写入是否封到收盘。买入价按涨停价（打板价）记，**炸板的也留着**——
+    那一刻已经买了，只留封住的就是幸存者偏差。``next_open_ret`` / ``next_close_ret`` 是次日开盘 / 收盘
+    相对打板价的收益（%）。这张表就是首板打板的向前验证。
+    """
+
+    __tablename__ = 'daban_live_hits'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String(16), nullable=False, index=True)
+    style = Column(String(8), nullable=False)
+    code = Column(String(16), nullable=False)
+    name = Column(String(64))
+    action = Column(String(16))
+    first_time = Column(String(8))
+    seen_at = Column(String(8))  # 盘中第一次给出该标的的时刻；收盘重建补录的为空
+    limit_price = Column(Float)
+    position_pct = Column(Integer)
+    slot = Column(Integer)  # 锁定的名额序号（1 起）；一旦给出当天不再变
+    sealed_close = Column(Boolean)
+    open_count = Column(Integer)
+    theme = Column(String(64))
+    phase = Column(String(32))
+    origin = Column(String(8))  # live = 盘中留档；close = 收盘按同一口径补录（盘中没开页面 / 后台轮询的那些天）
+    next_open_ret = Column(Float)
+    next_close_ret = Column(Float)
+    reviewed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index('ix_daban_live_hit_date_style', 'trade_date', 'style'),
+    )
+
+
+class DabanForecast(Base):
+    """首板预判候选（科比「先于市场发现可发酵的舆论事件」），只做向前验证，不在页面上推荐。
+
+    ``made_on`` 当天收盘后按发酵中的主线题材挑出，``target_date`` 次一交易日回填是否触板 / 封板。
+    """
+
+    __tablename__ = 'daban_forecasts'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    made_on = Column(String(16), nullable=False, index=True)
+    target_date = Column(String(16), nullable=False, index=True)
+    code = Column(String(16), nullable=False)
+    name = Column(String(64))
+    theme = Column(String(64))
+    source = Column(String(32))
+    touched = Column(Boolean)
+    sealed = Column(Boolean)
+    evaluated_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index('ix_daban_forecast_target', 'target_date'),
+    )
+
+
 class FundamentalSnapshot(Base):
     """
     基本面上下文快照（P0 write-only）。
@@ -1624,6 +1686,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
+            self._ensure_daban_live_hit_columns()
 
             self._initialized = True
             logger.info(f"数据库初始化完成: {db_url}")
@@ -1667,6 +1730,31 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             raise
         finally:
             session.close()
+
+    def _ensure_daban_live_hit_columns(self) -> None:
+        """「我是打板王」盘中雷达留档表在早期版本建表时缺少的列，补上（全部可空，不回填）。"""
+        if not self._is_sqlite_engine:
+            return
+        inspector = inspect(self._engine)
+        table = DabanLiveHit.__tablename__
+        if not inspector.has_table(table):
+            return
+        existing = {column["name"] for column in inspector.get_columns(table)}
+        wanted = {
+            "seen_at": "VARCHAR(8)",
+            "position_pct": "INTEGER",
+            "origin": "VARCHAR(8)",
+            "slot": "INTEGER",
+        }
+        for column, ddl in wanted.items():
+            if column in existing:
+                continue
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            except OperationalError as exc:
+                if not self._is_sqlite_duplicate_column_error(exc, column):
+                    raise
 
     def _ensure_decision_signal_profile_schema(self) -> None:
         """Add and backfill nullable decision_profile for existing SQLite DBs."""

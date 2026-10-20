@@ -512,7 +512,35 @@ class RuntimeSchedulerService:
             *self._current_intelligence_collect_background_tasks(config),
             *self._current_market_brief_background_tasks(config),
             *self._current_daban_background_tasks(config),
+            *self._current_daban_live_background_tasks(config),
         ]
+
+    def _current_daban_live_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        """「我是打板王」盘中雷达后台轮询（不开页面也留档 / 推送）。缓存语义同上。"""
+        from src.services.daban.live import (
+            LIVE_TASK_NAME,
+            LIVE_TASK_SECONDS,
+            build_live_background_tasks,
+        )
+
+        name = LIVE_TASK_NAME
+        entries = build_live_background_tasks(config, config_provider=self._reload_config)
+        if not entries:
+            self._background_task_cache.pop(name, None)
+            self._background_task_registered_names.discard(name)
+            return []
+        cached = self._background_task_cache.get(name)
+        if cached is None:
+            cached = dict(entries[0])
+            cached["name"] = name
+            self._background_task_cache[name] = cached
+        self._background_task_registered_names.add(name)
+        return [{
+            "task": cached["task"],
+            "interval_seconds": LIVE_TASK_SECONDS,
+            "run_immediately": False,
+            "name": name,
+        }]
 
     def _current_daban_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         """「我是打板王」盘后定时生成。缓存与 run_immediately 语义同 market brief。"""

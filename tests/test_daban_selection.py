@@ -77,7 +77,7 @@ class TestPatterns:
         candidates, _, _ = patterns.generate_candidates(_context(robot_day()))
         lead = next(c for c in candidates if c["code"] == "003029" and c["mode"] == "M1")
         ids = {pid for s in lead["signals"] for pid in s["principle_ids"]}
-        assert {"C13", "K22", "K14"} <= ids
+        assert {"C13", "K33", "K14"} <= ids
 
     def test_one_word_leader_is_marked_wait_for_divergence(self):
         zt = robot_day()

@@ -134,6 +134,8 @@ def build_lane(
         if cond and not (cand.get("conditions") or {}).get(cond):
             notes.append(_COND_NOTES.get(cond, "放行条件未满足"))
             action = ACTION_WATCH
+        if cand.get("cap_action") == ACTION_WATCH and action != ACTION_WATCH:
+            action = ACTION_WATCH
         if action != ACTION_WATCH and cand["score"] < grade_floor:
             notes.append(f"打板王指数 {cand['score']:.0f} < {grade_floor:.0f}，只进观察")
             action = ACTION_WATCH
@@ -217,6 +219,7 @@ _COND_NOTES = {
     "market_alive": "「大势未死」不成立（涨停不足 30 家或昨日涨停亏钱、无新题材接力）",
     "theme_profit": "题材还没打出赚钱效应（题材内昨日涨停今日不赚钱）",
     "no_mainline": "当前仍有主线，次新不是资金去处",
+    "new_theme": "陈小群此阶段只聚焦「新题材」的首板 / 二板，老题材不做",
 }
 
 
@@ -324,7 +327,7 @@ def decide_style(
         ("高位核按钮或高度回落；" if high_fall else "高位尚未见顶；")
         + (f"新题材 {'、'.join(t['name'] for t in new_themes[:3])}" if new_themes else "无成型新题材")
         + (f"，1进2 晋级率 {'回升' if (tier1 or 0) > 0 else '未回升'}" if tier1 is not None else ""),
-        ["K05", "K12", "K26"],
+        ["K05", "K12", "K26", "K35"],
     ))
 
     # k3 无主线可炒
@@ -347,7 +350,7 @@ def decide_style(
         "k4", STYLE_KOBE, "有故事空间大、尚未被充分认可的新题材", bool(fermentable) if story_known else None,
         ("、".join(f"{t['name']}（故事空间{t['story_label']}）" for t in fermentable[:3]) or "未发现")
         if story_known else "故事空间未评估（模型不可用）",
-        ["K10"],
+        ["K10", "K37"],
     ))
 
     # r1 近期战绩

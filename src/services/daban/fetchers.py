@@ -77,6 +77,20 @@ def previous_trade_date(day: str, *, max_back: int = 15) -> str:
     return (datetime.strptime(day, "%Y-%m-%d").date() - timedelta(days=1)).isoformat()
 
 
+def next_trade_date(day: str, *, max_ahead: int = 15) -> str:
+    """``YYYY-MM-DD`` 的下一个 A 股交易日。日历不可用时只跳过周末。"""
+    from src.core.trading_calendar import is_market_open
+
+    current = datetime.strptime(day, "%Y-%m-%d").date()
+    for _ in range(max_ahead):
+        current += timedelta(days=1)
+        if current.weekday() >= 5:
+            continue
+        if is_market_open("cn", current):
+            return current.isoformat()
+    return (datetime.strptime(day, "%Y-%m-%d").date() + timedelta(days=1)).isoformat()
+
+
 def recent_trade_dates(end: str, count: int) -> List[str]:
     """``end``（不含）之前的 ``count`` 个交易日，按时间正序。"""
     dates: List[str] = []
@@ -290,6 +304,7 @@ __all__ = [
     "fetch_ladder",
     "fetch_limit_pool",
     "fetch_theme_news",
+    "next_trade_date",
     "previous_trade_date",
     "recent_trade_dates",
     "run_parallel",

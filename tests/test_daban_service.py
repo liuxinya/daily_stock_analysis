@@ -167,3 +167,133 @@ class TestBackfillAndReview:
         assert stored["002889"]["next_day_change_pct"] == pytest.approx(-6.7)
         # 今天的推荐也落库了，明天复盘用。
         assert svc.repository.picks_for("2026-10-20")
+
+
+PHASE_WARM = {"available": True, "trade_date": "2026-10-19", "chen_stage": "warm", "chen_label": "回暖期",
+              "kobe_gate": "fall_2", "kobe_label": "主跌第 2 天"}
+
+
+class TestLiveAndForecastTracking:
+    @staticmethod
+    def _allow_all(monkeypatch):
+        """把「前一交易日周期」固定成放行的阶段；这里测的是留档 / 回填链路，不是周期分类。"""
+        from src.services.daban import live as live_mod
+
+        live_mod.clear_cache()
+        monkeypatch.setattr(live_mod.LiveRadarService, "previous_context", lambda self, day: dict(PHASE_WARM))
+
+    def test_close_records_sealed_and_broken_first_boards(self, db, upstream, monkeypatch):
+        """收盘补录：封住的标 sealed_close=True，**炸板的也留下**、标 False（防幸存者偏差）。"""
+        self._allow_all(monkeypatch)
+        broken = {**zt_row("600777", "炸板首板", reason="人形机器人", first_time="093200"), "change_pct": 3.0}
+        real_pool = service_mod.fetch_limit_pool
+
+        def pool(kind, trade_date, *, timeout, include_bse):
+            env = real_pool(kind, trade_date, timeout=timeout, include_bse=include_bse)
+            if kind == "zb":
+                env["value"]["rows"] = [broken]
+            return env
+
+        monkeypatch.setattr(service_mod, "fetch_limit_pool", pool)
+        svc = _service()
+        payload = svc.refresh(trade_date="2026-10-20")
+        hits = {h["code"]: h for h in svc.repository.live_hits("2026-10-20")}
+        assert hits, "应当记录雷达标的"
+        assert hits["600777"]["sealed_close"] is False and hits["600777"]["origin"] == "close"
+        assert any(h["sealed_close"] is True for h in hits.values())
+        assert all(h["limit_price"] for h in hits.values())
+        assert payload["live_review"]["opened"] >= 1
+
+    def test_intraday_records_are_not_overwritten_at_close(self, db, upstream, monkeypatch):
+        self._allow_all(monkeypatch)
+        svc = _service()
+        svc.repository.upsert_live_hits("2026-10-20", [{
+            "style": "kobe", "code": "002347", "name": "泰尔股份", "action": "trial", "first_time": "093745",
+            "seen_at": "093800", "limit_price": 6.61, "position_pct": 10, "sealed_close": None, "open_count": 0,
+            "theme": "机器人", "phase": "回暖期", "origin": "live",
+        }], final=False)
+        svc.refresh(trade_date="2026-10-20")
+        row = next(h for h in svc.repository.live_hits("2026-10-20") if h["code"] == "002347" and h["style"] == "kobe")
+        assert row["origin"] == "live" and row["seen_at"] == "093800" and row["position_pct"] == 10
+
+    def test_live_hits_are_reviewed_after_the_next_close(self, db, upstream, monkeypatch):
+        from src.services.daban import fetchers
+
+        self._allow_all(monkeypatch)
+        svc = _service()
+        svc.refresh(trade_date="2026-10-20")
+        assert svc.repository.live_hits("2026-10-20")
+        monkeypatch.setattr(fetchers, "next_trade_date", lambda day, **kw: "2026-10-21")
+        monkeypatch.setattr(fetchers, "fetch_klines", lambda codes, day, *, limit, timeout: _env(
+            "klines", rows={c: [{"time": "20261021", "open": 11.0, "high": 11.4, "low": 10.8, "close": 11.3}]
+                            for c in codes}
+        ))
+        upstream["zt"]["2026-10-21"] = [zt_row("002889", "东方嘉盛", reason="机器人概念")]
+        svc.refresh(trade_date="2026-10-21")
+        reviewed = [h for h in svc.repository.live_hits("2026-10-20") if h["reviewed"]]
+        assert reviewed and all(h["next_open_ret"] is not None for h in reviewed)
+
+    def test_forecasts_are_recorded_for_the_next_trade_date(self, db, upstream, monkeypatch):
+        monkeypatch.setattr(service_mod, "next_trade_date", lambda day, **kw: "2026-10-21")
+        monkeypatch.setattr(service_mod, "build_forecasts", lambda **kw: [
+            {"code": "600999", "name": "候选", "theme": "机器人", "source": "broken"},
+        ])
+        svc = _service()
+        svc.refresh(trade_date="2026-10-20")
+        rows = svc.repository.forecasts_for("2026-10-21")
+        assert [(r["code"], r["source"], r["evaluated"]) for r in rows] == [("600999", "broken", False)]
+
+
+class TestLockedSlotsAtClose:
+    def test_close_recording_keeps_intraday_slots_and_only_fills_the_rest(self, db, upstream, monkeypatch):
+        """盘中 10:00 前锁定的名额，收盘补录时原样保留；更早触板但盘中没记到的票不会挤掉它。"""
+        from src.services.daban import live as live_mod
+
+        live_mod.clear_cache()
+        monkeypatch.setattr(live_mod.LiveRadarService, "previous_context", lambda self, day: {
+            "available": True, "trade_date": "2026-10-19", "chen_stage": "retreat", "chen_label": "退潮期",
+            "kobe_gate": "fall_2", "kobe_label": "主跌第 2 天",       # 科比线只有 1 个 25% 的满额名额
+        })
+        svc = _service()
+        svc.repository.upsert_live_hits("2026-10-20", [{
+            "style": "kobe", "code": "603626", "name": "科森科技", "action": "actionable", "first_time": "102000",
+            "seen_at": "102005", "limit_price": 22.21, "position_pct": 25, "slot": 1, "sealed_close": None,
+            "open_count": 0, "theme": "机器人", "phase": "主跌第 2 天", "origin": "live",
+        }], final=False)
+        payload = svc.refresh(trade_date="2026-10-20")
+        rows = [h for h in svc.repository.live_hits("2026-10-20") if h["style"] == "kobe"]
+        assert [(h["code"], h["slot"], h["origin"]) for h in rows] == [("603626", 1, "live")]
+        assert rows[0]["sealed_close"] is True                     # 收盘写入是否封住
+        assert payload["live_review"]["locked_intraday"] == 1
+
+
+def test_existing_live_hit_table_gets_new_columns(tmp_path, monkeypatch):
+    """早期版本建的 daban_live_hits 没有 slot 等列：启动时自动补列，不丢数据。"""
+    import sqlite3
+
+    from src.config import Config
+    from src.storage import DatabaseManager
+
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE daban_live_hits (id INTEGER PRIMARY KEY, trade_date VARCHAR(16) NOT NULL, "
+            "style VARCHAR(8) NOT NULL, code VARCHAR(16) NOT NULL, name VARCHAR(64), action VARCHAR(16), "
+            "first_time VARCHAR(8), limit_price FLOAT, sealed_close BOOLEAN, open_count INTEGER, theme VARCHAR(64), "
+            "phase VARCHAR(32), next_open_ret FLOAT, next_close_ret FLOAT, reviewed_at DATETIME, created_at DATETIME)"
+        )
+        conn.execute("INSERT INTO daban_live_hits (trade_date, style, code, action) VALUES ('2026-10-16','kobe','600001','trial')")
+    monkeypatch.setenv("DATABASE_PATH", str(path))
+    Config._instance = None
+    DatabaseManager.reset_instance()
+    try:
+        from src.repositories.daban_repo import DabanRepository
+
+        rows = DabanRepository().live_hits("2026-10-16")
+        assert rows == [{**rows[0], "code": "600001", "slot": None, "origin": None}]
+        with sqlite3.connect(path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(daban_live_hits)")}
+        assert {"slot", "seen_at", "position_pct", "origin"} <= columns
+    finally:
+        DatabaseManager.reset_instance()
+        Config._instance = None

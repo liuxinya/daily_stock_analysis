@@ -63,16 +63,16 @@ def _score_theme(cand: Dict[str, Any], theme: Optional[Dict[str, Any]], rules: D
 def _score_role(cand: Dict[str, Any]) -> Dict[str, Any]:
     role = cand.get("role")
     score = {ROLE_TOTAL_LEADER: 20, ROLE_THEME_LEADER: 16, ROLE_FRONT: 10, ROLE_CATCH_UP: 8}.get(role, 4)
-    return _dim("B", score, cand.get("role_label") or "其他", "C13", "K22")
+    return _dim("B", score, cand.get("role_label") or "其他", "C13", "K33")
 
 
 def _score_position(cand: Dict[str, Any]) -> Dict[str, Any]:
     boards = int(cand.get("boards") or 0)
     role = cand.get("role")
     if role in (ROLE_TOTAL_LEADER, ROLE_THEME_LEADER):
-        return _dim("C", 15, f"{boards} 板龙头，绝对高位", "K11")
+        return _dim("C", 15, f"{boards} 板龙头，绝对高位", "K33")
     if 1 <= boards <= 2:
-        return _dim("C", 15, f"{boards} 板，绝对低位", "K11")
+        return _dim("C", 15, f"{boards} 板，绝对低位", "K33")
     if boards == 0:
         return _dim("C", 8, "非涨停股，位置按中性计", "K11")
     return _dim("C", 5, f"{boards} 板，偏中位", "K11")
@@ -99,9 +99,10 @@ def _score_board(cand: Dict[str, Any], rules: Dict[str, Any]) -> Dict[str, Any]:
     death = float(rules.get("death_turnover", 70.0))
     score = 6.0 if "换手" in board_type else (4.0 if "T" in board_type else 2.0)
     bits = [board_type or "涨停"]
-    if (cand.get("first_time") or "999999") <= str(rules.get("early_seal_time", "100000")):
-        score += 3
-        bits.append("封板早")
+    if (cand.get("first_time") or "") >= str(rules.get("weak_late_time", "143000")) and cand.get("mode") != MODE_WEAK_TO_STRONG:
+        # 尾盘板（科比 #33 算弱板）：只对非弱转强模式减分，弱转强本来就要弱板。
+        score -= 2
+        bits.append("尾盘板（弱板）")
     ratio = cand.get("seal_ratio")
     if ratio is not None:
         score += 3 if ratio >= 0.03 else (2 if ratio >= 0.01 else 1)
@@ -115,7 +116,7 @@ def _score_board(cand: Dict[str, Any], rules: Dict[str, Any]) -> Dict[str, Any]:
     if cand.get("mode") in (MODE_WEAK_TO_STRONG, MODE_LEADER) and int(cand.get("open_num") or 0) > 0:
         score += 2
         bits.append("炸板回封（分歧中换手）")
-    return _dim("D", score, "、".join(bits), "K14", "K29")
+    return _dim("D", score, "、".join(bits), "K14", "K29", "K27")
 
 
 def _score_temper(cand: Dict[str, Any]) -> Dict[str, Any]:
@@ -126,7 +127,7 @@ def _score_temper(cand: Dict[str, Any]) -> Dict[str, Any]:
     bits = []
     if suc is not None:
         score += 6 * float(suc)
-        bits.append(f"历史封板率 {float(suc):.0%}")
+        bits.append(f"历史封板成功率 {float(suc):.0%}")
     else:
         score += 3
         bits.append("封板率无数据（按中性计）")
@@ -190,7 +191,7 @@ def _risks(cand: Dict[str, Any], theme: Optional[Dict[str, Any]], rules: Dict[st
         and (kline.get("today_change") or 0) < 5
     ):
         items.append({"points": 5, "text": f"高位放量（量比 {kline['volume_ratio']:.1f}）但涨幅不足 5%，有滞涨迹象",
-                      "principle_ids": ["C06"]})
+                      "principle_ids": ["C06", "C23"]})
     turnover = cand.get("turnover_rate") or 0
     if turnover > float(rules.get("death_turnover", 70.0)):
         items.append({"points": 6, "text": f"换手 {turnover:.0f}%，死亡换手", "principle_ids": ["K29"]})

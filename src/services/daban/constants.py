@@ -77,7 +77,7 @@ MODE_LABELS = {
     MODE_LEADER: "龙头·分歧介入",
     MODE_WEAK_TO_STRONG: "弱转强",
     MODE_CATCH_UP: "低位补涨",
-    MODE_FIRST_BOARD: "首板挖掘 / 一进二",
+    MODE_FIRST_BOARD: "一进二",
     MODE_REBOUND: "反包二板 / 二波反包",
     MODE_SWITCH: "高低切 / 切换",
     MODE_SUB_NEW: "次新",
@@ -118,22 +118,23 @@ STYLE_LABELS = {"chen": "陈小群打法", "kobe": "92科比打法"}
 
 # 门控取值：None = 该打法不做这个模式；"actionable" / "trial" / "watch" = 行动级别；
 # 带 "@条件" 的表示满足条件才放行，否则降为观察（条件名见 styles._gate_condition）。
+# 陈小群线：每一格都对应原文阶段表里的「操作要点」，没写到的一律不放行（None）。
+#   冰点「只观察新题材萌芽」；回暖「聚焦新题材首板/二板」；发酵「围绕龙头或换手龙介入，分歧转一致时加仓」；
+#   高潮「坚定锁仓龙头」；分歧「只卖不买」，唯一例外是「龙头低吸（分歧期策略）」只做全市场绝对龙头；
+#   退潮「坚决离场」。二波反包原文要求「市场情绪未完全退潮，有新题材接力」，只在分歧期带条件放行。
+#   原文「只做龙头不做杂毛」，所以低位补涨不做。
 _CHEN_GATES = {
     "M1": {"ice": None, "warm": "watch", "ferment": "actionable", "climax": "actionable",
            "diverge": "trial@total_leader", "retreat": None},
-    "M2": {"ice": "watch", "warm": "trial", "ferment": "actionable", "climax": "actionable",
+    "M2": {"ice": None, "warm": "trial", "ferment": "actionable", "climax": "watch",
            "diverge": "watch", "retreat": None},
-    "M3": {"ice": None, "warm": None, "ferment": "trial", "climax": "trial",
+    "M3": {"ice": None, "warm": None, "ferment": None, "climax": None, "diverge": None, "retreat": None},
+    "M4": {"ice": "watch@new_theme", "warm": "trial@new_theme", "ferment": "watch", "climax": "watch",
            "diverge": None, "retreat": None},
-    "M4": {"ice": "watch", "warm": "trial", "ferment": "actionable", "climax": "actionable",
-           "diverge": "watch", "retreat": "watch"},
-    "M5": {"ice": None, "warm": "trial", "ferment": "trial", "climax": "trial",
+    "M5": {"ice": None, "warm": None, "ferment": None, "climax": None,
            "diverge": "trial@market_alive", "retreat": None},
-    "M6": {"ice": "watch", "warm": None, "ferment": None, "climax": None,
-           "diverge": None, "retreat": "watch"},
-    # 陈小群原文没有次新打法，不放行。
-    "M7": {"ice": None, "warm": None, "ferment": None, "climax": None,
-           "diverge": None, "retreat": None},
+    "M6": {"ice": "watch", "warm": None, "ferment": None, "climax": None, "diverge": None, "retreat": None},
+    "M7": {"ice": None, "warm": None, "ferment": None, "climax": None, "diverge": None, "retreat": None},
 }
 
 _KOBE_GATES = {
@@ -143,8 +144,9 @@ _KOBE_GATES = {
            "fall_1": None, "fall_2": "watch", "fall_3": "trial"},
     "M3": {"low_shock": None, "main_rise": "actionable@theme_profit", "high_shock": "trial@theme_profit",
            "fall_1": None, "fall_2": None, "fall_3": None},
-    "M4": {"low_shock": "trial", "main_rise": "actionable", "high_shock": "trial",
-           "fall_1": "watch", "fall_2": "watch", "fall_3": "trial"},
+    # 一进二：回测一年整体次日溢价为负（docs/daban-king.md「首板回测」），只给试错；主跌第一天回测最差，不做。
+    "M4": {"low_shock": "trial", "main_rise": "trial", "high_shock": "trial",
+           "fall_1": None, "fall_2": "watch", "fall_3": "trial"},
     "M5": {"low_shock": "trial", "main_rise": "trial", "high_shock": "watch",
            "fall_1": None, "fall_2": None, "fall_3": "watch"},
     "M6": {"low_shock": "trial", "main_rise": None, "high_shock": "trial",
@@ -167,8 +169,9 @@ DEFAULT_RULES: Dict[str, Any] = {
     "big_loss_pct": -5.0,          # 昨日涨停今日跌幅 ≤ 此值记为「大面」
     "death_turnover": 70.0,        # 死亡换手（科比 #35）
     "weak_late_time": "143000",    # 末次封板晚于此时刻视为尾盘偷鸡板
-    "early_seal_time": "100000",   # 首封早于此时刻视为封板早
-    "low_price": 20.0,             # 补涨「够低价」
+    "low_price": 20.0,             # 补涨「够低价」；盘中雷达的低价标准也用它
+    "o12_max_price": 40.0,         # 一进二：股价不低于此值只观察（科比「低价为王」，回测 ≥40 元为负）
+    "live_chen_min_peers": 2,      # 盘中雷达：陈小群线要求同题材在它之前已有几只触板（市场共识）
     "small_cap": 100e8,            # 补涨「够小盘」（流通市值，元）
     "theme_long_days": 45,         # 题材持续超过此天数扣分（科比 #15：一个半月到两个月）
     "theme_old_days": 30,          # 题材持续超过此天数 A 维度减分
@@ -189,6 +192,25 @@ DEFAULT_RULES: Dict[str, Any] = {
     "news_themes": 4,
     "backfill_days": 20,
     "gates": {"chen": _CHEN_GATES, "kobe": _KOBE_GATES},
+    # 盘中首板雷达：按「前一交易日收盘」的周期决定今天能不能打首板（陈小群「每日开盘前用5大指标判断情绪周期，
+    # 确定仓位上限」）。科比线依据 #9 / #12 / #33，主跌第二天回测最好（+1.95%），主跌第一天回测为负、原文
+    # 「第一天杀跌是很恐怖的」，不做。陈小群线只有回暖期「聚焦新题材首板/二板」，其余阶段只观察或空仓。
+    "live_gates": {
+        "kobe": {"low_shock": "trial", "main_rise": "trial", "high_shock": "trial",
+                 "fall_1": None, "fall_2": "actionable", "fall_3": "trial"},
+        "chen": {"ice": "watch", "warm": "trial", "ferment": "watch", "climax": "watch",
+                 "diverge": None, "retreat": None},
+    },
+    # 盘中雷达每派、每阶段的总仓位上限（%）。原文只有陈小群的阶段仓位与科比「分四个票」「轻仓」，
+    # 科比各阶段的具体数字是系统参数（低位试错 20、主升分四票、高位轻仓 30、主跌第二天之后一个满额名额），可覆盖。
+    "live_caps": {
+        "kobe": {"low_shock": 20, "main_rise": 100, "high_shock": 30, "fall_1": 0, "fall_2": 25, "fall_3": 20},
+        "chen": {"ice": 0, "warm": 20, "ferment": 0, "climax": 0, "diverge": 0, "retreat": 0},
+    },
+    "live_open_time": "093100",    # 开盘一分钟内封板的视为竞价 / 秒板（多为一字，打板买不到；回测 -0.72%）
+    "live_max_watch": 30,
+    "forecast_per_theme": 8,
+    "forecast_max": 30,
     "lane_caps": {
         "chen": {"ice": 0, "warm": 20, "ferment": 50, "climax": 80, "diverge": 30, "retreat": 0},
         "kobe": {"low_shock": 20, "main_rise": 100, "high_shock": 30, "fall_1": 0, "fall_2": 10, "fall_3": 20},
@@ -210,7 +232,7 @@ DEFAULT_RULES: Dict[str, Any] = {
 
 # 空仓时线头显示的该派原话。键为（打法, 阶段）。
 FLAT_MESSAGES = {
-    ("chen", STAGE_ICE): ("冰点期空仓，不抄底，只观察新题材萌芽", ["C01", "C10"]),
+    ("chen", STAGE_ICE): ("冰点期空仓，不抄底，只观察新题材萌芽", ["C16", "C01"]),
     ("chen", STAGE_RETREAT): ("退潮期空仓是最佳策略", ["C02", "C10"]),
     ("kobe", "fall_1"): ("主跌第一天杀跌很恐怖，只观察不动手", ["K09"]),
 }

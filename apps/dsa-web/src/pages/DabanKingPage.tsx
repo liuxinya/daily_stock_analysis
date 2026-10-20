@@ -1,14 +1,16 @@
 import type React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Crown, RefreshCw, Send } from 'lucide-react';
 import { DABAN_NOT_GENERATED, dabanApi } from '../api/daban';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
-import { ApiErrorAlert, AppPage, Button, EmptyState, InlineAlert, PageHeader } from '../components/common';
+import { ApiErrorAlert, AppPage, Button, EmptyState, InlineAlert, PageHeader, SectionCard } from '../components/common';
 import {
   BoardLadder,
   CycleDashboard,
   ExcludedList,
   JobProgress,
+  LiveRadar,
   ReviewPanel,
   StyleLanes,
   StyleVerdictPanel,
@@ -16,8 +18,18 @@ import {
 } from '../components/daban';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type { DabanHistoryItem, DabanJob, DabanOverview } from '../types/daban';
+import { cn } from '../utils/cn';
 
 const POLL_INTERVAL_MS = 2000;
+
+type TabKey = 'review' | 'live';
+
+/** 交易时段默认落在「盘中雷达」，其余时间默认盘后复盘。 */
+const initialTab = (): TabKey => {
+  const now = new Date();
+  const hhmm = now.getHours() * 100 + now.getMinutes();
+  return now.getDay() >= 1 && now.getDay() <= 5 && hhmm >= 915 && hhmm <= 1500 ? 'live' : 'review';
+};
 
 type ActionMessage = { tone: 'info' | 'success' | 'danger'; text: string };
 
@@ -38,6 +50,15 @@ const DabanKingPage: React.FC = () => {
   const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // 支持 ?tab=live / ?tab=review 深链：交易时段默认盘中雷达，其余时间默认盘后复盘。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get('tab');
+  const tab: TabKey = tabParam === 'live' || tabParam === 'review' ? tabParam : initialTab();
+  const setTab = (next: TabKey) => setSearchParams((prev) => {
+    const params = new URLSearchParams(prev);
+    params.set('tab', next);
+    return params;
+  }, { replace: true });
   const [job, setJob] = useState<DabanJob | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPushing, setIsPushing] = useState(false);
@@ -198,15 +219,45 @@ const DabanKingPage: React.FC = () => {
         }
       />
 
-      {loadError ? <ApiErrorAlert error={loadError} className="mb-4" /> : null}
-      {actionMessage ? <InlineAlert variant={actionMessage.tone} className="mb-4" message={actionMessage.text} /> : null}
-      {job && (isRunning || job.status === 'failed') ? (
+      <div role="tablist" aria-label={t('dabanKing.title')} className="mt-4 mb-4 flex flex-wrap gap-2">
+        {(['review', 'live'] as TabKey[]).map((key) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={cn(
+              'rounded-full border px-4 py-1.5 text-sm transition-colors',
+              tab === key
+                ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]/10 font-medium text-[hsl(var(--primary))]'
+                : 'border-border text-secondary-text hover:border-[hsl(var(--primary))]/40 hover:text-foreground'
+            )}
+          >
+            {key === 'review' ? t('dabanKing.tab.review') : t('dabanKing.tab.live')}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'live' ? (
+        <LiveRadar
+          principles={overview?.principles ?? {}}
+          styleLabels={overview?.styleLabels ?? { chen: '陈小群打法', kobe: '92科比打法' }}
+          t={t}
+        />
+      ) : null}
+
+      {tab === 'review' ? loadError ? <ApiErrorAlert error={loadError} className="mb-4" /> : null : null}
+      {tab === 'review' && actionMessage ? (
+        <InlineAlert variant={actionMessage.tone} className="mb-4" message={actionMessage.text} />
+      ) : null}
+      {tab === 'review' && job && (isRunning || job.status === 'failed') ? (
         <div className="mb-4">
           <JobProgress job={job} t={t} />
         </div>
       ) : null}
 
-      {isLoading ? (
+      {tab === 'review' && (isLoading ? (
         <div className="py-16 text-center text-sm text-secondary-text">{t('common.loading')}</div>
       ) : notGenerated || !overview ? (
         <EmptyState
@@ -271,6 +322,51 @@ const DabanKingPage: React.FC = () => {
             />
           ) : null}
 
+          <SectionCard title={t('dabanKing.liveReview')} subtitle={t('dabanKing.liveReviewSubtitle')}>
+            {overview.liveStats && Object.values(overview.liveStats).some((row) => row?.picks) ? (
+              <ul className="space-y-1 text-xs text-foreground">
+                {(['chen', 'kobe'] as const).map((style) => {
+                  const row = overview.liveStats?.[style];
+                  if (!row?.picks) return null;
+                  return (
+                    <li key={style}>
+                      {t('dabanKing.liveStatLine', {
+                        style: overview.styleLabels?.[style] ?? style,
+                        picks: row.picks,
+                        days: row.days,
+                        sealed: row.sealedRate === null ? '—' : `${(row.sealedRate * 100).toFixed(0)}%`,
+                        open: row.openMean === null ? '—' : `${row.openMean > 0 ? '+' : ''}${row.openMean}%`,
+                        close: row.closeMean === null ? '—' : `${row.closeMean > 0 ? '+' : ''}${row.closeMean}%`,
+                        win: row.winRate === null ? '—' : `${(row.winRate * 100).toFixed(0)}%`,
+                      })}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="text-xs text-secondary-text">{t('dabanKing.liveReviewEmpty')}</p>
+            )}
+          </SectionCard>
+
+          <SectionCard title={t('dabanKing.forecastReview')} subtitle={t('dabanKing.forecastReviewSubtitle')}>
+            {overview.forecastReview?.total ? (
+              <ul className="space-y-1 text-xs text-foreground">
+                {Object.entries(overview.forecastReview.groups).map(([source, group]) => (
+                  <li key={source}>
+                    {t('dabanKing.forecastGroup', {
+                      source,
+                      n: group.n,
+                      touch: group.touchRate === null ? '—' : `${(group.touchRate * 100).toFixed(0)}%`,
+                      seal: group.sealRate === null ? '—' : `${(group.sealRate * 100).toFixed(0)}%`,
+                    })}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-secondary-text">{t('dabanKing.forecastEmpty')}</p>
+            )}
+          </SectionCard>
+
           <div className="space-y-1 rounded-xl border border-border/40 bg-elevated/30 p-3 text-[11px] leading-relaxed text-secondary-text">
             {overview.disclaimers?.investment ? <p>{overview.disclaimers.investment}</p> : null}
             {overview.disclaimers?.data ? <p>{overview.disclaimers.data}</p> : null}
@@ -283,7 +379,7 @@ const DabanKingPage: React.FC = () => {
             </p>
           </div>
         </div>
-      )}
+      ))}
     </AppPage>
   );
 };

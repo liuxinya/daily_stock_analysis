@@ -5,6 +5,7 @@ import type {
   DabanHistoryItem,
   DabanJob,
   DabanJobSubmit,
+  DabanLive,
   DabanOverview,
   DabanPushResult,
 } from '../types/daban';
@@ -98,3 +99,14 @@ export const dabanApi = {
 };
 
 export default dabanApi;
+
+/** 盘中雷达：不转 id 字典（这里没有），但保留 snake→camel。 */
+export const dabanLiveApi = {
+  get: async (force = false): Promise<DabanLive> => {
+    const response = await apiClient.get<Record<string, unknown>>(`${BASE}/live`, {
+      params: force ? { force: true } : undefined,
+      timeout: 25000,
+    });
+    return toCamelCase<DabanLive>(response.data);
+  },
+};

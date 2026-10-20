@@ -1056,6 +1056,10 @@ class Config:
     daban_push_enabled: bool = False  # 是否允许把结论推送到已配置的通知渠道
     daban_auto_generate: bool = False  # 交易日盘后（15:30 后）自动生成一次；需 SCHEDULE_ENABLED=true
     daban_auto_push: bool = False  # 自动生成后是否顺带推送（还需 DABAN_PUSH_ENABLED=true）
+    daban_live_enabled: bool = True  # 是否启用盘中首板雷达（页面「盘中雷达」标签）
+    daban_live_cache_ttl_sec: int = 5  # 盘中快照的进程内缓存时长（秒）；页面每 10 秒轮询
+    daban_live_poll_sec: int = 10  # 页面盘中自动刷新间隔（秒），交易时段生效
+    daban_live_push_enabled: bool = False  # 雷达新出现可执行 / 试错标的时推送；同时启用交易时段后台轮询（需 SCHEDULE_ENABLED）
 
     # === 股票查询（百度财经代理）acs-token 配置 ===
     # 百度财经 /vapi/v1/* 接口（资金 / 分析）需要 acs-token 请求头，缺失即 403 风控。
@@ -2159,6 +2163,16 @@ class Config:
             daban_push_enabled=parse_env_bool(os.getenv('DABAN_PUSH_ENABLED'), False),
             daban_auto_generate=parse_env_bool(os.getenv('DABAN_AUTO_GENERATE'), False),
             daban_auto_push=parse_env_bool(os.getenv('DABAN_AUTO_PUSH'), False),
+            daban_live_enabled=parse_env_bool(os.getenv('DABAN_LIVE_ENABLED'), True),
+            daban_live_cache_ttl_sec=parse_env_int(
+                os.getenv('DABAN_LIVE_CACHE_TTL_SEC'), 5,
+                field_name='DABAN_LIVE_CACHE_TTL_SEC', minimum=0, maximum=60,
+            ),
+            daban_live_poll_sec=parse_env_int(
+                os.getenv('DABAN_LIVE_POLL_SEC'), 10,
+                field_name='DABAN_LIVE_POLL_SEC', minimum=5, maximum=60,
+            ),
+            daban_live_push_enabled=parse_env_bool(os.getenv('DABAN_LIVE_PUSH_ENABLED'), False),
             baidu_finance_token_enabled=parse_env_bool(os.getenv('BAIDU_FINANCE_TOKEN_ENABLED'), True),
             baidu_finance_token_ttl_sec=parse_env_int(
                 os.getenv('BAIDU_FINANCE_TOKEN_TTL_SEC'), 90,

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import mean
 from typing import Any, Callable, Dict, List, Optional
 
@@ -35,7 +35,10 @@ from src.services.daban.constants import (
     STYLE_LABELS,
     load_rules,
 )
+from src.services.daban.forecast import build_forecasts, summarize_forecasts
+from src.services.daban.live import build_hits
 from src.services.daban.fetchers import (
+    next_trade_date,
     effective_trade_date,
     fetch_blocks,
     fetch_em,
@@ -54,12 +57,7 @@ from src.services.daban.principles import PRINCIPLES
 from src.services.daban.roles import assign_roles
 from src.services.daban.scoring import finalize_score, score_candidate
 from src.services.daban.styles import STYLES, build_lane, decide_style, mark_consensus
-from src.services.daban.themes import (
-    apply_story,
-    build_themes,
-    rule_story_space,
-    split_reason,
-)
+from src.services.daban.themes import apply_story, build_themes, rule_story_space, split_reason
 
 logger = logging.getLogger(__name__)
 
@@ -79,14 +77,9 @@ class DabanUpstreamError(RuntimeError):
 
 
 def _decode(row) -> Optional[Dict[str, Any]]:
-    if row is None:
-        return None
-    try:
-        payload = json.loads(row.payload or "{}")
-    except (TypeError, ValueError):
-        logger.warning("打板王：快照 %s 的 payload 无法解析", getattr(row, "id", "?"))
-        return None
-    return payload if isinstance(payload, dict) else None
+    from src.repositories.daban_repo import decode_payload
+
+    return decode_payload(row)
 
 
 def apply_boards(zt_rows: List[Dict[str, Any]], ladder_env: Dict[str, Any], *, source: str) -> str:
@@ -307,6 +300,18 @@ class DabanService:
         review = self._review_previous(prev_day, day, zt=zt, zb=zb, dt=dt, previous=previous, persist=not intraday)
         track = self._track_record(day)
 
+        if not intraday:
+            self._evaluate_forecasts(day, zt=zt, zb=zb)
+
+        self._review_live_hits(day, intraday=intraday)
+
+        # 8.1 盘中雷达的当日成绩单（按前一交易日的周期门控评估，与盘中看到的一致）与首板预判回填。
+        live_summary = self._record_live_day(
+            day, zt=zt, zb=zb,
+            yesterday_codes={r["code"] for r in yesterday_rows} | {r["code"] for r in previous or []},
+            persist=not intraday,
+        )
+
         max_actionable = int(getattr(self.config, "daban_max_actionable", 4) or 4)
         lanes = self._lanes(candidates, stage, kobe, max_actionable)
         verdict = decide_style(
@@ -352,6 +357,9 @@ class DabanService:
             "excluded": excluded[:40],
             "review": review,
             "track_record": track,
+            "live_review": live_summary,
+            "live_stats": self._live_stats(day),
+            "forecast_review": summarize_forecasts(self.repository.evaluated_forecasts(limit_days=60)),
             "conclusion": {
                 "summary": conclusion.get("summary") or "",
                 "risks": conclusion.get("risks") or [],
@@ -680,6 +688,112 @@ class DabanService:
             }
         return out
 
+    # ------------------------------------------------------------------ 盘中雷达成绩单 / 首板预判
+
+    def _record_live_day(self, day: str, *, zt, zb, yesterday_codes, persist: bool) -> Optional[Dict[str, Any]]:
+        """收盘时按盘中雷达的同一口径重建当天标的，补录盘中没记到的，并写入是否封到收盘。
+
+        门控周期与盘中一样取「当天的前一交易日」（库里有复盘就用，没有就现算）；炸板的首板也算在内。
+        """
+        from src.services.daban.live import LiveRadarService, live_hit_record
+
+        radar = LiveRadarService(repository=self.repository, config=self.config)
+        phase = radar.previous_context(day)
+        if not phase.get("available"):
+            return {"available": False, "reason": phase.get("reason")}
+        # 盘中已锁定的名额原样保留，补录只分剩下的名额——收盘留档与盘中看到的必须是同一组票。
+        built = build_hits(
+            rows=zt, broken=zb, phase=phase, rules=self.rules, memory=radar.memory(until=day),
+            recent_mains=phase.get("recent_mains"),
+            yesterday_codes=set(phase.get("yesterday_codes") or []) | set(yesterday_codes or []),
+            max_picks=radar.max_picks, locked=radar.locked(day),
+        )
+        calls = [h for h in built["hits"] if h["action"] in (ACTION_ACTIONABLE, ACTION_TRIAL)]
+        if persist:
+            records = []
+            for hit in calls:
+                record = live_hit_record(hit, origin="close")
+                record["sealed_close"] = {"sealed": True, "opened": False}.get(hit["status"])
+                records.append(record)
+            self.repository.upsert_live_hits(day, records, final=True)
+        return {
+            "available": True,
+            "locked_intraday": sum(1 for h in calls if h.get("locked_at")),
+            "prev_trade_date": phase.get("trade_date"),
+            "phase": {"chen": phase.get("chen_label"), "kobe": phase.get("kobe_label")},
+            "phase_source": phase.get("source"),
+            "calls": len(calls),
+            "sealed": sum(1 for h in calls if h["status"] == "sealed"),
+            "opened": sum(1 for h in calls if h["status"] == "opened"),
+            "actionable": sum(1 for h in calls if h["action"] == ACTION_ACTIONABLE),
+            "items": [
+                {key: h[key] for key in ("code", "name", "style", "action", "action_label", "first_time", "status",
+                                         "position_pct", "peers", "theme")}
+                for h in calls[:20]
+            ],
+        }
+
+    def _review_live_hits(self, day: str, *, intraday: bool) -> None:
+        """回填「次日已收盘」的雷达标的（打板价买入、次日开盘 / 收盘卖出）。盘中刷新不回填。"""
+        if intraday:
+            return
+        try:
+            from src.services.daban.live import review_pending_live_hits
+
+            review_pending_live_hits(self.repository, today=day, now="235959")
+        except Exception as exc:
+            logger.warning("打板王：回填盘中雷达标的失败 %s", exc)
+
+    def _live_stats(self, day: str) -> Dict[str, Any]:
+        """近 20 个交易日盘中雷达标的的实际表现（打板价买入），按打法分开。"""
+        rows = self.repository.reviewed_live_hits(limit_days=20, before=next_trade_date(day))
+        out: Dict[str, Any] = {}
+        for style in STYLES:
+            mine = [r for r in rows if r["style"] == style and r.get("next_close_ret") is not None]
+            changes = [float(r["next_close_ret"]) for r in mine]
+            opens = [float(r["next_open_ret"]) for r in mine if r.get("next_open_ret") is not None]
+            out[style] = {
+                "days": len({r["trade_date"] for r in mine}),
+                "picks": len(mine),
+                "sealed_rate": round(sum(1 for r in mine if r.get("sealed_close")) / len(mine), 4) if mine else None,
+                "open_mean": round(mean(opens), 2) if opens else None,
+                "close_mean": round(mean(changes), 2) if changes else None,
+                "win_rate": round(sum(1 for c in changes if c > 0) / len(changes), 4) if changes else None,
+            }
+        return out
+
+    def _save_forecasts(self, day: str, *, zt, broken, themes) -> None:
+        """收盘后记录次日首板预判候选，下一交易日由 :meth:`_evaluate_forecasts` 回填。"""
+        try:
+            since = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=60)).strftime("%Y-%m-%d")
+            memory: Dict[str, set] = {}
+            for code, reason in self.repository.reason_memory(since, "zt"):
+                tags = set(split_reason(reason or ""))
+                if tags:
+                    memory.setdefault(code, set()).update(tags)
+            limit_memory: Dict[str, int] = {}
+            for _, pool_rows in self.repository.pool_history_since(since, "zt"):
+                for row in pool_rows:
+                    limit_memory[row["code"]] = limit_memory.get(row["code"], 0) + 1
+            picks = build_forecasts(
+                themes=themes, zt=zt, broken=broken, reason_memory=memory,
+                limit_memory=limit_memory, rules=self.rules,
+            )
+            target = next_trade_date(day)
+            self.repository.save_forecasts(day, target, picks)
+        except Exception as exc:
+            logger.warning("打板王：记录首板预判失败 %s", exc)
+
+    def _evaluate_forecasts(self, day: str, *, zt, zb) -> None:
+        try:
+            if not self.repository.forecasts_for(day):
+                return
+            touched = {r["code"] for r in zt} | {r["code"] for r in zb}
+            sealed = {r["code"] for r in zt}
+            self.repository.evaluate_forecasts(day, touched, sealed)
+        except Exception as exc:
+            logger.warning("打板王：回填首板预判失败 %s", exc)
+
     # ------------------------------------------------------------------ 汇总与落库
 
     @staticmethod
@@ -769,6 +883,7 @@ class DabanService:
                             "mode": pick["mode"], "action": pick["action"], "score": pick["score"],
                         })
                 self.repository.save_picks(day, picks)
+                self._save_forecasts(day, zt=zt, broken=zb, themes=payload.get("themes") or [])
             retention = int(getattr(self.config, "daban_retention_days", 180) or 180)
             deleted = self.repository.apply_retention(retention)
             if deleted:
