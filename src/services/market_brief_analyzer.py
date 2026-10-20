@@ -42,8 +42,11 @@ PROMPT_VERSION = "market-brief-v1"
 ANALYSIS_CALL_TYPE = "market_brief"
 ANALYSIS_TEMPERATURE = 0.2
 # 留出余量：推理型模型会先输出 reasoning，正文预算不够就会以 finish_reason=length
-# 收尾且 content 为空，上游包装层会把它当成空响应
-ANALYSIS_MAX_OUTPUT_TOKENS = 8192
+# 收尾。content 为空时上游包装层当成空响应判失败；只写了一半更隐蔽——非空就被当成
+# 成功结果，json_repair 把半截 JSON 救成 prefix，排在 sectors 之后的 watch_list /
+# takeaways / risks 静默变空。实测 deepseek-v4.1-flash 即便 effort=low 仍会吃掉
+# 5.4k-8k reasoning token，8192 不够写完正文，所以按「reasoning 占掉一半」留。
+ANALYSIS_MAX_OUTPUT_TOKENS = 16384
 
 MAX_EVENTS = 12
 MAX_SECTORS = 8

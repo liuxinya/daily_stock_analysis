@@ -130,6 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 三栏图表的排版放松：MACD / KDJ 的数值行从浮在图上的绝对定位层改成独立表头条（原先会压住上一栏曲线），三栏之间加分隔线与间距，主图加高到 300px、MACD 128px、KDJ 160px（最后一栏承担共享时间轴）。
 - [改进] MACD 与 KDJ 两栏副图改为常驻，去掉副图切换 tab：一次请求把 `ma,macd,kdj` 全要回来，切换副图不再触发重取。两栏各在左上角常驻一行数值（`dif/dea/macd`、`k/d/j`），跟随十字光标所在那一根、光标离开回落到最后一根，同时满足图表对比度的「可见标签」补偿要求。MACD 柱在红涨绿跌之外增加一层形状编码：**柱体放大为实心、收缩为空心**（红绿在 deutan 下 ΔE≈8，不能只靠颜色）。副图线条复用主图均线的三个已校验色槽，不新引入色值。
 - [新功能] K 线支持平移与缩放：拖动与**双指左右滑动**平移、**双指上下滑动**（向上看更广、向下看更少）与滚轮缩放（锚定右端）、方向键平移、`+`/`-` 缩放、`Home` 复位，另有「全览 / 复位」按钮；图表可 Tab 聚焦，带 `aria-label` 与操作提示。一次取回 500 根、首屏显示最近 120 根，缩放平移都在已有数据里做，不边拖边请求。视窗用「可见根数 + 右端偏移」记位置而非起始下标，所以自动刷新在末尾追加一根时视窗会自然跟上最新那根，往左看历史也不会被刷新拽回去。滚轮用非 passive 监听以 `preventDefault`，避免页面跟着滚。跟手度上做了三件事：视窗变更合并到一帧（`requestAnimationFrame`，此前每个指针/滚轮事件都 setState，三栏图表每秒重绘上百次）、缩放改用 `size *= exp(deltaY × 0.0015)` 而非固定倍数（触控板一次手势连发几十个小 delta，固定 1.2 倍会瞬间缩到底）、拖动中跳过光标数值跟踪（recharts 的 mousemove 与指针事件会在同一帧各发一次 setState）；横滑位移累计到够一根才走，否则每次几像素会被取整抹成 0。
+- [修复] 消息面汇总输出预算从 8192 提到 16384：deepseek-v4.1-flash 即便 `MARKET_BRIEF_REASONING_EFFORT=low` 仍会吃掉 5.4k–8k reasoning token，8192 下正文以 `finish_reason=length` 截断；截断的 `content` 非空不会被判失败，`json_repair` 救回的半截 JSON 让排在 `sectors` 之后的 `watch_list` / `takeaways` / `risks` / `keywords` 静默变空（2026-10-20 盘前那份即 events 12、sectors 8 而 `watch_list` 0，前端「关注股票」「下一步关注」两张卡片整块不渲染）。已实测千帆通道接受 `max_tokens=16384`。
 
 
 ## [3.31.0] - 2026-08-23

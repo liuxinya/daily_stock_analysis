@@ -124,7 +124,7 @@ payload **顶层**还有一个 `evidence` 数组，供前端把 `evidence_ids` �
 - **调用自己兜 deadline**：`generate_text_with_metadata` 没有 timeout 参数，连接挂死会让后台任务永远停住。用 `ThreadPoolExecutor(1)` + `future.result(timeout=...)` + `shutdown(wait=False)`；加 `wait=True` 就退化成阻塞等待。
 - **降级返回 200，配置问题抛 503**：全段失败走关键词兜底并标注 `degraded`；但 LLM 未配置必须抛 503，不能静默降级。
 - **超时优先于「预算耗尽」**作为降级原因：预算常常就是被超时调用烧掉的。
-- **推理型模型必须限制 reasoning effort**（`MARKET_BRIEF_REASONING_EFFORT`，默认 `low`，仅对 `glm-5` / `deepseek-v4` 系透传）。这不是省钱：实测 glm-5.3-flash 不限推理时会把整个输出预算（6144 token / reasoning 1.7 万字符）全烧在思考上，`finish_reason=length` 而 `content` 为空，上游包装层判定为空响应 → `all_models_failed` → 整次汇总降级成关键词。加上 `effort=low` 后reasoning 降到十几个字符、正文 6500+ 字符正常返回。输出预算也相应提到 8192 留缓冲。
+- **推理型模型必须限制 reasoning effort**（`MARKET_BRIEF_REASONING_EFFORT`，默认 `low`，仅对 `glm-5` / `deepseek-v4` 系透传）。这不是省钱：实测 glm-5.3-flash 不限推理时会把整个输出预算（6144 token / reasoning 1.7 万字符）全烧在思考上，`finish_reason=length` 而 `content` 为空，上游包装层判定为空响应 → `all_models_failed` → 整次汇总降级成关键词。加上 `effort=low` 后reasoning 降到十几个字符、正文 6500+ 字符正常返回。但 `effort=low` 并非每个模型都真的吃下：deepseek-v4.1-flash 在 `low` 下仍会用掉 5.4k–8k reasoning token，所以输出预算现为 16384。**截断比空响应更隐蔽**：`content` 被 `finish_reason=length` 切掉一半时非空，上游不判失败，`json_repair` 把半截 JSON 救成 prefix，排在 `sectors` 之后的 `watch_list` / `takeaways` / `risks` 就静默变空（2026-10-20 盘前那份即 events 12、sectors 8 而 `watch_list` 0）。
 
 三处与 CCTV 不同：
 
