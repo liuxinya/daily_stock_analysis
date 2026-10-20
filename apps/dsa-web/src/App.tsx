@@ -29,6 +29,7 @@ const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const StockQueryPage = lazy(() => import('./pages/StockQueryPage'));
 const IndustryFundsPage = lazy(() => import('./pages/IndustryFundsPage'));
+const DabanKingPage = lazy(() => import('./pages/DabanKingPage'));
 
 /**
  * 旧入口 `/cctv-news` 已并入「新闻分析」页。
@@ -109,6 +110,7 @@ const AppContent: React.FC = () => {
         <Route path="/decision-signals" element={<DecisionSignalsPage />} />
         <Route path="/screening" element={<StockScreeningPage />} />
         <Route path="/industry-funds" element={<IndustryFundsPage />} />
+        <Route path="/daban-king" element={<DabanKingPage />} />
         <Route path="/backtest" element={<BacktestPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/usage" element={<TokenUsagePage />} />

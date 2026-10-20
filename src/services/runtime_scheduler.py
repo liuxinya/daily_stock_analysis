@@ -511,7 +511,46 @@ class RuntimeSchedulerService:
             *self._current_agent_event_monitor_background_tasks(config),
             *self._current_intelligence_collect_background_tasks(config),
             *self._current_market_brief_background_tasks(config),
+            *self._current_daban_background_tasks(config),
         ]
+
+    def _current_daban_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        """「我是打板王」盘后定时生成。缓存与 run_immediately 语义同 market brief。"""
+        from src.services.daban.push import (
+            TICK_SECONDS,
+            TICK_TASK_NAME,
+            build_daban_background_tasks,
+        )
+
+        name = TICK_TASK_NAME
+        enabled = bool(getattr(config, "daban_enabled", True)) and bool(getattr(config, "daban_auto_generate", False))
+        if not enabled:
+            self._background_task_cache.pop(name, None)
+            self._background_task_registered_names.discard(name)
+            return []
+
+        cached = self._background_task_cache.get(name)
+        if cached is None:
+            entries = build_daban_background_tasks(config, config_provider=self._reload_config)
+            if not entries:
+                self._background_task_cache.pop(name, None)
+                self._background_task_registered_names.discard(name)
+                return []
+            cached = dict(entries[0])
+            cached["name"] = name
+            self._background_task_cache[name] = cached
+
+        run_immediately = (
+            bool(cached.get("run_immediately", False))
+            and name not in self._background_task_registered_names
+        )
+        self._background_task_registered_names.add(name)
+        return [{
+            "task": cached["task"],
+            "interval_seconds": TICK_SECONDS,
+            "run_immediately": run_immediately,
+            "name": name,
+        }]
 
     def _current_market_brief_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         """消息面汇总的定时生成任务。缓存与 run_immediately 语义同上。"""

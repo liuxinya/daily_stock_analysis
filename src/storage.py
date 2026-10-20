@@ -429,6 +429,100 @@ class IndustryFundsSnapshot(Base):
     )
 
 
+class DabanSnapshot(Base):
+    """「我是打板王」每个交易日一份快照。
+
+    ``kind`` 区分两类记录：``full`` 是完整刷新（含两条推荐线与模型解读），``backfill`` 是
+    冷启动时按日回补的轻量记录（只有周期指标，供 10 日条带、Δ 与「主跌第 N 天」计数用）。
+    标量列与 payload 里的同名字段一致，存成列是为了画条带时不用反序列化 payload。
+
+    ``trade_date`` 是数据所属交易日，同一天重复刷新时按它覆盖。
+    """
+
+    __tablename__ = 'daban_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String(16), nullable=False, index=True)
+    kind = Column(String(16), nullable=False, default='full')
+    stage = Column(String(16))
+    kobe_stage = Column(String(16))
+    fall_day = Column(Integer)
+    zt_count = Column(Integer)
+    zb_count = Column(Integer)
+    dt_count = Column(Integer)
+    lianban_count = Column(Integer)
+    max_height = Column(Integer)
+    promotion_rate = Column(Float)
+    yzt_premium = Column(Float)
+    big_loss_count = Column(Integer)
+    zab_rate = Column(Float)
+    main_themes = Column(String(255))
+    preferred_style = Column(String(16))
+    intraday = Column(Boolean, default=False)
+    model = Column(String(120))
+    provider = Column(String(64))
+    degraded = Column(Boolean, default=False)
+    payload = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_daban_snapshot_trade_date', 'trade_date'),
+        Index('ix_daban_snapshot_kind_date', 'kind', 'trade_date'),
+    )
+
+
+class DabanPoolRow(Base):
+    """涨停 / 炸板 / 跌停池的逐股记录（按交易日覆盖）。
+
+    上游东财只保留约 30 个交易日，题材持续天数、分层晋级率回看、推荐复盘都靠本地累积。
+    """
+
+    __tablename__ = 'daban_pool_rows'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String(16), nullable=False, index=True)
+    pool = Column(String(8), nullable=False)
+    code = Column(String(16), nullable=False)
+    name = Column(String(64))
+    boards = Column(Integer)
+    change_pct = Column(Float)
+    reason = Column(String(255))
+    limit_up_type = Column(String(16))
+    first_time = Column(String(8))
+    last_time = Column(String(8))
+    seal_amount = Column(Float)
+    circ_mv = Column(Float)
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index('ix_daban_pool_date_pool', 'trade_date', 'pool'),
+        Index('ix_daban_pool_code', 'code'),
+    )
+
+
+class DabanPick(Base):
+    """两条打法线每天的推荐（可执行 / 试错），次日回填兑现情况，用于按打法统计战绩。"""
+
+    __tablename__ = 'daban_picks'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String(16), nullable=False, index=True)
+    style = Column(String(8), nullable=False)
+    code = Column(String(16), nullable=False)
+    name = Column(String(64))
+    mode = Column(String(8))
+    action = Column(String(16))
+    score = Column(Float)
+    next_day_change_pct = Column(Float)
+    next_day_limit_up = Column(Boolean)
+    reviewed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index('ix_daban_pick_date_style', 'trade_date', 'style'),
+    )
+
+
 class FundamentalSnapshot(Base):
     """
     基本面上下文快照（P0 write-only）。

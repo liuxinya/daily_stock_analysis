@@ -21,6 +21,7 @@ from api.v1.endpoints import (
     baidu_finance,
     cctv_news,
     chart,
+    daban,
     decision_signals,
     health,
     history,
@@ -157,6 +158,12 @@ router.include_router(
     industry_funds.router,
     prefix="/industry-funds",
     tags=["IndustryFunds"]
+)
+
+router.include_router(
+    daban.router,
+    prefix="/daban",
+    tags=["Daban"]
 )
 
 router.include_router(

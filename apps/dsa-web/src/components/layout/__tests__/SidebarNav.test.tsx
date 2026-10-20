@@ -7,6 +7,7 @@ const mockLogout = vi.fn().mockResolvedValue(undefined);
 const mockGetScreeningStatus = vi.fn().mockResolvedValue({ enabled: false, available: false });
 // 行业资金默认开启，菜单项默认可见（与选股相反），所以默认返回 enabled: true。
 const mockGetIndustryFundsStatus = vi.fn().mockResolvedValue({ enabled: true });
+const mockGetDabanStatus = vi.fn().mockResolvedValue({ enabled: true });
 const mockThemeToggle = vi.fn(({ collapsed }: { collapsed?: boolean }) => (
   <button type="button">{collapsed ? '切换主题(折叠)' : '切换主题'}</button>
 ));
@@ -37,6 +38,13 @@ vi.mock('../../../api/industryFunds', () => ({
   INDUSTRY_FUNDS_NOT_GENERATED: 'not_generated',
   industryFundsApi: {
     getStatus: () => mockGetIndustryFundsStatus(),
+  },
+}));
+
+vi.mock('../../../api/daban', () => ({
+  DABAN_NOT_GENERATED: 'not_generated',
+  dabanApi: {
+    getStatus: () => mockGetDabanStatus(),
   },
 }));
 
@@ -75,7 +83,7 @@ describe('SidebarNav', () => {
       '/news-analysis',
       '/screening',
       '/industry-funds',
-      '/portfolio',
+      '/daban-king',
     ]);
   });
 

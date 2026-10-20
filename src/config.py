@@ -1043,6 +1043,20 @@ class Config:
     industry_funds_retention_days: int = 90  # 快照保留天数；本地 ETF 份额基线与历史分位都靠它累积
     industry_funds_push_enabled: bool = False  # 是否允许把页面结论推送到已配置的通知渠道
 
+    # === 我是打板王（短线情绪周期与打板推荐）配置 ===
+    # 基于 92科比 / 陈小群两位游资公开理念：规则判周期、规则打分，模型只评故事空间并写理由。
+    daban_enabled: bool = True  # 是否启用「我是打板王」页面与接口
+    daban_refresh_cooldown_sec: int = 60  # 两次生成之间的最小间隔（秒）；上游按频率风控
+    daban_llm_timeout_sec: int = 120  # 单次模型调用超时（秒）；底层不暴露 timeout，必须自己兜
+    daban_reasoning_effort: str = "low"  # 推理强度：low/high/max；仅对支持的模型族透传
+    daban_max_actionable: int = 4  # 每条打法线「可执行」级推荐上限（92科比：分四个票操作）
+    daban_include_bse: bool = False  # 统计与选股是否纳入北交所（同花顺口径默认不含）
+    daban_rules_file: str = ""  # 阈值 / 门控矩阵覆盖 YAML 路径；为空用内置默认值
+    daban_retention_days: int = 180  # 快照、池子与推荐记录保留天数
+    daban_push_enabled: bool = False  # 是否允许把结论推送到已配置的通知渠道
+    daban_auto_generate: bool = False  # 交易日盘后（15:30 后）自动生成一次；需 SCHEDULE_ENABLED=true
+    daban_auto_push: bool = False  # 自动生成后是否顺带推送（还需 DABAN_PUSH_ENABLED=true）
+
     # === 股票查询（百度财经代理）acs-token 配置 ===
     # 百度财经 /vapi/v1/* 接口（资金 / 分析）需要 acs-token 请求头，缺失即 403 风控。
     # token 由浏览器混淆 JS 生成：桌面端由 Electron 隐藏窗口推入，服务器端由
@@ -2122,6 +2136,29 @@ class Config:
                 field_name='INDUSTRY_FUNDS_RETENTION_DAYS', minimum=7, maximum=730,
             ),
             industry_funds_push_enabled=parse_env_bool(os.getenv('INDUSTRY_FUNDS_PUSH_ENABLED'), False),
+            daban_enabled=parse_env_bool(os.getenv('DABAN_ENABLED'), True),
+            daban_refresh_cooldown_sec=parse_env_int(
+                os.getenv('DABAN_REFRESH_COOLDOWN_SEC'), 60,
+                field_name='DABAN_REFRESH_COOLDOWN_SEC', minimum=0, maximum=3600,
+            ),
+            daban_llm_timeout_sec=parse_env_int(
+                os.getenv('DABAN_LLM_TIMEOUT_SEC'), 120,
+                field_name='DABAN_LLM_TIMEOUT_SEC', minimum=10, maximum=600,
+            ),
+            daban_reasoning_effort=((os.getenv('DABAN_REASONING_EFFORT') or '').strip().lower() or 'low'),
+            daban_max_actionable=parse_env_int(
+                os.getenv('DABAN_MAX_ACTIONABLE'), 4,
+                field_name='DABAN_MAX_ACTIONABLE', minimum=1, maximum=10,
+            ),
+            daban_include_bse=parse_env_bool(os.getenv('DABAN_INCLUDE_BSE'), False),
+            daban_rules_file=((os.getenv('DABAN_RULES_FILE') or '').strip()),
+            daban_retention_days=parse_env_int(
+                os.getenv('DABAN_RETENTION_DAYS'), 180,
+                field_name='DABAN_RETENTION_DAYS', minimum=30, maximum=730,
+            ),
+            daban_push_enabled=parse_env_bool(os.getenv('DABAN_PUSH_ENABLED'), False),
+            daban_auto_generate=parse_env_bool(os.getenv('DABAN_AUTO_GENERATE'), False),
+            daban_auto_push=parse_env_bool(os.getenv('DABAN_AUTO_PUSH'), False),
             baidu_finance_token_enabled=parse_env_bool(os.getenv('BAIDU_FINANCE_TOKEN_ENABLED'), True),
             baidu_finance_token_ttl_sec=parse_env_int(
                 os.getenv('BAIDU_FINANCE_TOKEN_TTL_SEC'), 90,

@@ -1690,6 +1690,14 @@ def main() -> int:
                 config_provider=_reload_runtime_config,
             ))
 
+            # 「我是打板王」盘后定时生成：与常驻服务共用 builder
+            from src.services.daban.push import build_daban_background_tasks
+
+            background_tasks.extend(build_daban_background_tasks(
+                config,
+                config_provider=_reload_runtime_config,
+            ))
+
             schedule_kwargs = {
                 "task": scheduled_task,
                 "schedule_time": config.schedule_time,
