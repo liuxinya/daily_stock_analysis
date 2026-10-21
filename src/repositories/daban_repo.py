@@ -219,11 +219,16 @@ class DabanRepository:
                 (r.style, r.code): r for r in
                 session.execute(select(DabanLiveHit).where(DabanLiveHit.trade_date == trade_date)).scalars().all()
             }
-            taken = {(r.style, r.slot) for r in existing.values() if r.slot}
+            # 只有「有有效首次封板时间」的行才占名额：竞价期间写下的空时间行不占位（与读取口径一致）。
+            taken = {(r.style, r.slot) for r in existing.values() if r.slot and _valid_hhmmss(r.first_time)}
             for hit in hits:
                 key = (hit.get("style"), hit.get("code"))
                 row = existing.get(key)
                 if row is None:
+                    if hit.get("origin") == "live" and not hit.get("slot"):
+                        # 正式名额没带序号（旧调用 / 外部写入）：按该打法当天已有的最大序号接上。
+                        used = [slot for style, slot in taken if style == hit.get("style")]
+                        hit = {**hit, "slot": (max(used) if used else 0) + 1}
                     slot_key = (hit.get("style"), hit.get("slot"))
                     if hit.get("slot") and slot_key in taken:
                         # 名额已被另一只票锁定（两个进程同时分配）：不覆盖，下一轮按已锁定名额重新分配。
@@ -235,6 +240,14 @@ class DabanRepository:
                     if hit.get("slot"):
                         taken.add(slot_key)
                     inserted.append(hit)
+                elif hit.get("origin") == "live" and row.origin == "preboard":
+                    # 之前作为「未涨停候选」留过档，现在锁定它：升级为正式名额，保留首次出现时刻。
+                    row.action = hit.get("action") or row.action
+                    row.position_pct = hit.get("position_pct")
+                    row.slot = hit.get("slot")
+                    row.origin = "live"
+                    row.seen_at = hit.get("seen_at") or row.seen_at
+                    row.gap_pct = hit.get("gap_pct")
                 elif final:
                     if hit.get("sealed_close") is not None:
                         row.sealed_close = hit.get("sealed_close")
@@ -242,6 +255,20 @@ class DabanRepository:
                         row.open_count = hit.get("open_count")
             session.commit()
         return inserted
+
+    def mark_preboard_seals(self, trade_date: str, sealed_codes: set) -> int:
+        """收盘时给未涨停候选写「最终有没有封住」。"""
+        updated = 0
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(DabanLiveHit).where(and_(DabanLiveHit.trade_date == trade_date,
+                                                DabanLiveHit.origin == "preboard"))
+            ).scalars().all()
+            for row in rows:
+                row.sealed_close = row.code in sealed_codes
+                updated += 1
+            session.commit()
+        return updated
 
     def pending_live_dates(self) -> List[str]:
         """还有未回填标的的交易日，按时间正序。"""
@@ -352,13 +379,19 @@ def _pick_dict(row: DabanPick) -> Dict[str, Any]:
     }
 
 
+def _valid_hhmmss(value: Any) -> bool:
+    text = str(value or "").strip()
+    return len(text) >= 4 and text.isdigit()
+
+
 def _live_dict(row: DabanLiveHit) -> Dict[str, Any]:
     return {
         "trade_date": row.trade_date, "style": row.style, "code": row.code, "name": row.name,
         "action": row.action, "first_time": row.first_time, "seen_at": row.seen_at, "limit_price": row.limit_price,
         "position_pct": row.position_pct, "slot": row.slot, "sealed_close": row.sealed_close,
         "open_count": row.open_count,
-        "theme": row.theme, "phase": row.phase, "origin": row.origin,
+        "theme": row.theme, "phase": row.phase, "origin": row.origin, "gap_pct": row.gap_pct,
+        "seen_price": row.seen_price,
         "next_open_ret": row.next_open_ret, "next_close_ret": row.next_close_ret,
         "reviewed": row.reviewed_at is not None,
     }

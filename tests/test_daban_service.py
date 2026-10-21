@@ -182,56 +182,47 @@ class TestLiveAndForecastTracking:
         live_mod.clear_cache()
         monkeypatch.setattr(live_mod.LiveRadarService, "previous_context", lambda self, day: dict(PHASE_WARM))
 
-    def test_close_records_sealed_and_broken_first_boards(self, db, upstream, monkeypatch):
-        """收盘补录：封住的标 sealed_close=True，**炸板的也留下**、标 False（防幸存者偏差）。"""
+    def test_close_marks_preboard_seals_and_never_locks_sealed_boards(self, db, upstream, monkeypatch):
+        """收盘只做两件事：给未涨停候选写「最终封没封住」，以及保留盘中锁定的名额。
+
+        已经封板的票不占名额、也不补录——出现时已经买不进去了。
+        """
         self._allow_all(monkeypatch)
-        broken = {**zt_row("600777", "炸板首板", reason="人形机器人", first_time="093200"), "change_pct": 3.0}
-        real_pool = service_mod.fetch_limit_pool
-
-        def pool(kind, trade_date, *, timeout, include_bse):
-            env = real_pool(kind, trade_date, timeout=timeout, include_bse=include_bse)
-            if kind == "zb":
-                env["value"]["rows"] = [broken]
-            return env
-
-        monkeypatch.setattr(service_mod, "fetch_limit_pool", pool)
         svc = _service()
+        svc.repository.upsert_live_hits("2026-10-20", [
+            {"style": "kobe", "code": "603278", "name": "大业股份", "action": "watch", "first_time": "093500",
+             "seen_at": "093500", "limit_price": 12.0, "seen_price": 11.6, "gap_pct": 3.4, "position_pct": 0,
+             "sealed_close": None, "open_count": 0, "theme": "机器人", "phase": "主跌第 2 天", "origin": "preboard"},
+        ], final=False)
         payload = svc.refresh(trade_date="2026-10-20")
-        hits = {h["code"]: h for h in svc.repository.live_hits("2026-10-20")}
-        assert hits, "应当记录雷达标的"
-        assert hits["600777"]["sealed_close"] is False and hits["600777"]["origin"] == "close"
-        assert any(h["sealed_close"] is True for h in hits.values())
-        assert all(h["limit_price"] for h in hits.values())
-        assert payload["live_review"]["opened"] >= 1
+        rows = svc.repository.live_hits("2026-10-20")
+        assert [r["code"] for r in rows] == ["603278"]
+        assert rows[0]["origin"] == "preboard" and rows[0]["sealed_close"] is True   # 大业股份当天涨停
+        assert payload["live_review"]["calls"] == 0        # 没有已封板被锁成名额
 
-    def test_intraday_records_are_not_overwritten_at_close(self, db, upstream, monkeypatch):
-        self._allow_all(monkeypatch)
-        svc = _service()
-        svc.repository.upsert_live_hits("2026-10-20", [{
-            "style": "kobe", "code": "002347", "name": "泰尔股份", "action": "trial", "first_time": "093745",
-            "seen_at": "093800", "limit_price": 6.61, "position_pct": 10, "sealed_close": None, "open_count": 0,
-            "theme": "机器人", "phase": "回暖期", "origin": "live",
-        }], final=False)
-        svc.refresh(trade_date="2026-10-20")
-        row = next(h for h in svc.repository.live_hits("2026-10-20") if h["code"] == "002347" and h["style"] == "kobe")
-        assert row["origin"] == "live" and row["seen_at"] == "093800" and row["position_pct"] == 10
-
-    def test_live_hits_are_reviewed_after_the_next_close(self, db, upstream, monkeypatch):
+    def test_intraday_lock_is_kept_and_reviewed_from_the_seen_price(self, db, upstream, monkeypatch):
         from src.services.daban import fetchers
 
         self._allow_all(monkeypatch)
         svc = _service()
+        svc.repository.upsert_live_hits("2026-10-20", [
+            {"style": "kobe", "code": "002347", "name": "泰尔股份", "action": "trial", "first_time": "093745",
+             "seen_at": "093800", "limit_price": 6.61, "seen_price": 6.40, "gap_pct": 3.3, "position_pct": 10,
+             "sealed_close": None, "open_count": 0, "theme": "机器人", "phase": "主跌第 2 天", "origin": "live"},
+        ], final=False)
         svc.refresh(trade_date="2026-10-20")
-        assert svc.repository.live_hits("2026-10-20")
+        kept = svc.repository.live_hits("2026-10-20")[0]
+        assert kept["origin"] == "live" and kept["position_pct"] == 10 and kept["slot"] == 1
+
+        # 次日：以锁定时的现价 6.40 为成本，而不是打板价 6.61
         monkeypatch.setattr(fetchers, "next_trade_date", lambda day, **kw: "2026-10-21")
         monkeypatch.setattr(fetchers, "fetch_klines", lambda codes, day, *, limit, timeout: _env(
-            "klines", rows={c: [{"time": "20261021", "open": 11.0, "high": 11.4, "low": 10.8, "close": 11.3}]
-                            for c in codes}
-        ))
+            "klines", rows={c: [{"time": "20261021", "open": 6.4, "high": 6.9, "low": 6.3, "close": 6.72}]
+                            for c in codes}))
         upstream["zt"]["2026-10-21"] = [zt_row("002889", "东方嘉盛", reason="机器人概念")]
         svc.refresh(trade_date="2026-10-21")
         reviewed = [h for h in svc.repository.live_hits("2026-10-20") if h["reviewed"]]
-        assert reviewed and all(h["next_open_ret"] is not None for h in reviewed)
+        assert reviewed and reviewed[0]["next_close_ret"] == pytest.approx((6.72 / 6.40 - 1) * 100, abs=0.05)
 
     def test_forecasts_are_recorded_for_the_next_trade_date(self, db, upstream, monkeypatch):
         monkeypatch.setattr(service_mod, "next_trade_date", lambda day, **kw: "2026-10-21")

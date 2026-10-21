@@ -461,7 +461,14 @@ def fetch_ths_changes(*, timeout: Optional[float] = None) -> List[Dict[str, Any]
     return events
 
 
-_EM_CHANGE_TYPES = {"seal": (4, "FIRST_LIMIT"), "open": (16, "LIMIT_FAILED")}
+# 东财盘口异动类型：4 封涨停、16 打开涨停、8201 火箭发射（涨速快）、8202 快速反弹。
+# 8201/8202 的 ``i`` 是 "涨幅小数,触发价,涨幅小数"，正好用来抓「还没涨停但正在拉升」的票。
+_EM_CHANGE_TYPES = {
+    "seal": (4, "FIRST_LIMIT"),
+    "open": (16, "LIMIT_FAILED"),
+    "rise": (8201, "RISE"),
+    "rebound": (8202, "REBOUND"),
+}
 
 
 def fetch_em_changes(kind: str, *, timeout: Optional[float] = None) -> List[Dict[str, Any]]:
@@ -478,18 +485,62 @@ def fetch_em_changes(kind: str, *, timeout: Optional[float] = None) -> List[Dict
         timeout=timeout,
     )
     rows = ((payload.get("data") or {}).get("allstock")) or []
-    return [
-        {
-            "code": str(row.get("c") or "").strip(),
+    out = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("c"):
+            continue
+        change = price = None
+        parts = str(row.get("i") or "").split(",")
+        if len(parts) >= 2:
+            change, price = _num(parts[0]), _num(parts[1])
+        out.append({
+            "code": str(row["c"]).strip(),
             "name": str(row.get("n") or "").strip(),
             "type": normalized,
             "date": "",
             "time": int_to_hhmmss(row.get("tm")),
             "order_amount": None,
-        }
-        for row in rows
-        if isinstance(row, dict) and row.get("c")
-    ]
+            "change": change * 100 if normalized in ("RISE", "REBOUND") and change is not None else None,
+            "price": price,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------- 个股所属概念（东财选股器）
+
+
+_EM_XUANGU_URL = "https://data.eastmoney.com/dataapi/xuangu/list"
+_EM_XUANGU_STY = "SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,CONCEPT,INDUSTRY"
+
+
+def fetch_em_concepts(codes: List[str], *, timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
+    """批量取个股所属概念与行业（东财选股器，一次最多几百只）。
+
+    用途：盘中候选股当下没有涨停原因、本地也没有历史涨停记录时，用它兜底判断「属于哪个板块」。
+    返回 ``{code: {"industry": str, "concepts": [str, ...]}}``；失败抛异常，由调用方降级。
+    """
+    wanted = [str(c).strip() for c in codes if str(c).strip()]
+    out: Dict[str, Dict[str, Any]] = {}
+    for start in range(0, len(wanted), 200):
+        batch = wanted[start:start + 200]
+        flt = "(SECURITY_CODE in (" + ",".join(f'"{c}"' for c in batch) + "))"
+        payload = _get_json(
+            _EM_XUANGU_URL,
+            {"st": "SECURITY_CODE", "sr": "-1", "ps": len(batch), "p": 1, "sty": _EM_XUANGU_STY,
+             "filter": flt, "source": "SELECT", "client": "WEB"},
+            timeout=timeout,
+        )
+        rows = ((payload.get("result") or {}).get("data")) or []
+        for row in rows:
+            code = str(row.get("SECURITY_CODE") or "").strip()
+            if not code:
+                continue
+            out[code] = {
+                "name": str(row.get("SECURITY_NAME_ABBR") or "").strip(),
+                "industry": str(row.get("INDUSTRY") or "").strip(),
+                "concepts": [str(x).strip() for x in (row.get("CONCEPT") or []) if str(x).strip()],
+            }
+    return out
 
 
 # ---------------------------------------------------------------------- 腾讯批量行情
@@ -530,6 +581,7 @@ def parse_tencent_line(line: str) -> Optional[Dict[str, Any]]:
             "circ_mv": (_num(fields[44]) or 0) * 1e8 or None,
             "limit_up": float(fields[47]),
             "limit_down": float(fields[48]),
+            "volume_ratio": _num(fields[49]),
         }
     except (TypeError, ValueError):
         return None
@@ -561,6 +613,7 @@ __all__ = [
     "LimitUpUpstreamError",
     "epoch_to_hhmmss",
     "fetch_em_changes",
+    "fetch_em_concepts",
     "fetch_em_pool",
     "fetch_tencent_quotes",
     "fetch_ths_changes",

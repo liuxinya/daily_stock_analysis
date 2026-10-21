@@ -12,6 +12,12 @@ type Translate = (key: UiTextKey, params?: Record<string, string | number>) => s
 
 const DEFAULT_POLL_SEC = 10;
 
+/** 热度色阶：排名越靠前越红（0°），越靠后越蓝（210°）。用于题材卡片的边框与底色。 */
+const heatHue = (index: number, total: number) => {
+  if (total <= 1) return 0;
+  return Math.round((index / (total - 1)) * 210);
+};
+
 /** 取数不碰 state：模块级纯 fetcher，setState 只在 promise 回调里（仓库的 hooks 规则要求）。 */
 const fetchLive = async (force: boolean) => {
   const { dabanLiveApi } = await import('../../api/daban');
@@ -56,7 +62,9 @@ const HitRow: React.FC<{
       ) : (
         <span className="text-[11px] text-muted-text">{t('dabanKing.live.noPeers')}</span>
       )}
-      {hit.status === 'opened' ? (
+      {hit.status === 'preboard' ? (
+        <Badge variant="history">{t('dabanKing.live.preboard', { gap: (hit.gapPct ?? 0).toFixed(1) })}</Badge>
+      ) : hit.status === 'opened' ? (
         <Badge variant="warning">{t('dabanKing.live.brokeNow')}</Badge>
       ) : hit.sealed === true ? (
         <Badge variant="success">{t('dabanKing.live.sealed')}</Badge>
@@ -81,13 +89,37 @@ const HitRow: React.FC<{
           {hit.theme}
           {hit.themeRank ? ` #${hit.themeRank}` : ''}
           {hit.themeMain ? ` · ${t('dabanKing.mainline')}` : ''}
+          {hit.themeSource === 'history' ? ` · ${t('dabanKing.live.themeHistory')}` : ''}
+          {hit.themeSource === 'block' ? ` · ${t('dabanKing.live.themeBlock')}` : ''}
+        </span>
+      ) : hit.themeHint ? (
+        <span>
+          {hit.themeHint}
+          {hit.themeSource === 'history' ? ` · ${t('dabanKing.live.themeHistory')}` : ''}
+          {hit.themeSource === 'block' ? ` · ${t('dabanKing.live.themeBlock')}` : ''}
         </span>
       ) : (
-        <span className="text-muted-text">{t('dabanKing.live.noTheme')}</span>
+        <span className="text-warning">{t('dabanKing.live.themePending')}</span>
       )}
       {hit.sealAmount ? <span>{t('dabanKing.live.sealAmount', { value: (hit.sealAmount / 1e8).toFixed(2) })}</span> : null}
       {hit.sealRatio !== null ? <span>{t('dabanKing.live.sealRatio', { value: formatRate(hit.sealRatio, 2) })}</span> : null}
       {hit.turnoverRate !== null ? <span>{t('dabanKing.live.turnover', { value: hit.turnoverRate.toFixed(1) })}</span> : null}
+      {hit.status === 'preboard' && hit.volumeRatio ? (
+        <span>{t('dabanKing.live.volumeRatio', { value: hit.volumeRatio.toFixed(2) })}</span>
+      ) : null}
+      {hit.status === 'preboard' && hit.sealedInTheme ? (
+        <span className="text-cyan">{t('dabanKing.live.sealedInTheme', { n: hit.sealedInTheme })}</span>
+      ) : null}
+      {hit.status === 'preboard' ? (
+        hit.themeNews === null || hit.themeNews === undefined ? (
+          <span className="text-muted-text">{t('dabanKing.live.newsPending')}</span>
+        ) : (
+          <span>{t('dabanKing.live.themeNews', { n: hit.themeNews })}</span>
+        )
+      ) : null}
+      {hit.themeSource === 'concept' ? (
+        <span className="text-secondary-text">{t('dabanKing.live.themeConcept')}</span>
+      ) : null}
       {hit.circMv ? <span>{t('dabanKing.live.circMv', { value: (hit.circMv / 1e8).toFixed(0) })}</span> : null}
       {hit.limitUpType ? <span>{hit.limitUpType}</span> : null}
       {hit.highDays ? <span>{hit.highDays}</span> : null}
@@ -122,6 +154,10 @@ export const LiveRadar: React.FC<{
   const [auto, setAuto] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [newCodes, setNewCodes] = useState<Set<string>>(new Set());
+  // 每派各自的子标签：已锁定 / 未锁定潜力股
+  const [laneTab, setLaneTab] = useState<Record<DabanStyle, 'locked' | 'potential'>>({ chen: 'locked', kobe: 'locked' });
+  // 今日主线题材筛选：null = 全部
+  const [themeFilter, setThemeFilter] = useState<string | null>(null);
   const seen = useRef<Set<string>>(new Set());
   const tickRef = useRef(0);
 
@@ -171,6 +207,17 @@ export const LiveRadar: React.FC<{
   }
 
   const styles: DabanStyle[] = ['chen', 'kobe'];
+  // 后端已按热度排序；这里按涨停数、新闻数兜底排序，并取「本页已用名额」的最大值展示
+  const sortedThemes = [...(live.hotThemes ?? [])].sort(
+    (a, b) => (a.rank ?? 99) - (b.rank ?? 99) || b.ztCount - a.ztCount
+  );
+  const usedByTheme = new Map<string, number>();
+  live.hits.forEach((hit) => {
+    if (hit.slot && hit.theme) usedByTheme.set(hit.theme, (usedByTheme.get(hit.theme) ?? 0) + 1);
+  });
+  sortedThemes.forEach((theme) => {
+    theme.used = usedByTheme.get(theme.name) ?? theme.used ?? 0;
+  });
   const byStyle = (style: DabanStyle) => live.hits.filter((hit) => hit.style === style);
   const refreshDisabled = !live.previous?.available;
 
@@ -229,6 +276,9 @@ export const LiveRadar: React.FC<{
                     ? t('dabanKing.live.allowed', { action: action === 'actionable' ? t('dabanKing.live.actActionable') : action === 'trial' ? t('dabanKing.live.actTrial') : t('dabanKing.live.actWatch') })
                     : t('dabanKing.live.forbidden')}
                 </p>
+                {style === 'chen' && live.gateLabels.chenW2sAction ? (
+                  <p className="mt-0.5 text-[11px] text-cyan">{t('dabanKing.live.chenW2s')}</p>
+                ) : null}
               </div>
             );
           })}
@@ -251,6 +301,67 @@ export const LiveRadar: React.FC<{
           <span className="text-warning">{t('dabanKing.live.statTrial', { n: live.stats.trial ?? 0 })}</span>
         </div>
       </SectionCard>
+
+      {live.hotThemes?.length ? (
+        <SectionCard title={t('dabanKing.live.hotTitle')} subtitle={t('dabanKing.live.hotSubtitle')}>
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label={t('dabanKing.live.hotTitle')}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={themeFilter === null}
+              onClick={() => setThemeFilter(null)}
+              className={cn(
+                'rounded-xl border px-3 py-2 text-left text-xs transition-colors',
+                themeFilter === null ? 'border-cyan/60 bg-cyan/10 text-cyan' : 'border-border/50 bg-elevated/30 hover:bg-hover'
+              )}
+            >
+              {t('dabanKing.live.hotAll')}
+            </button>
+            {sortedThemes.map((theme, index) => {
+              const hue = heatHue(index, sortedThemes.length);
+              const active = themeFilter === theme.key;
+              return (
+                <button
+                  key={theme.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setThemeFilter(theme.key)}
+                  style={{
+                    borderColor: `hsl(${hue} 75% ${active ? 55 : 45}% / ${active ? 0.85 : 0.35})`,
+                    backgroundColor: `hsl(${hue} 70% 50% / ${active ? 0.16 : 0.07})`,
+                  }}
+                  className="min-w-[9rem] rounded-xl border px-3 py-2 text-left transition-colors hover:brightness-110"
+                >
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+                    <span
+                      className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] text-white"
+                      style={{ backgroundColor: `hsl(${hue} 75% 45%)` }}
+                      aria-hidden="true"
+                    >
+                      {theme.rank ?? index + 1}
+                    </span>
+                    {theme.name}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] text-secondary-text">
+                    {t('dabanKing.live.hotStats', {
+                      zt: theme.ztCount,
+                      days: theme.days,
+                      news: theme.newsCount === null || theme.newsCount === undefined ? '—' : theme.newsCount,
+                    })}
+                  </span>
+                  <span className="block text-[10px] text-foreground">
+                    {t('dabanKing.live.hotQuota', { used: theme.used ?? 0, quota: theme.quota ?? 2 })}
+                  </span>
+                  <span className="block text-[10px] text-cyan">
+                    {t('dabanKing.live.hotCandidates', { n: theme.candidates ?? 0 })}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </SectionCard>
+      ) : null}
 
       {live.events?.recent?.length ? (
         <SectionCard title={t('dabanKing.live.eventsTitle')} subtitle={t('dabanKing.live.eventsSubtitle')}>
@@ -277,8 +388,13 @@ export const LiveRadar: React.FC<{
         {styles.map((style) => {
           const rows = byStyle(style);
           const lane = live.lanes?.[style];
-          const calls = rows.filter((hit) => hit.action !== 'watch');
-          const watch = rows.filter((hit) => hit.action === 'watch');
+          // 已锁定：拿到名额的票（动作与仓位锁定）。未锁定潜力股：通过了本派门控但没拿到名额，
+          // 或刚被发现还没轮到——按发现时间倒序，最新的在最上面。
+          const inTheme = (hit: DabanLiveHit) => themeFilter === null || hit.theme === themeFilter;
+          const locked = rows.filter((hit) => hit.slot !== null && hit.slot !== undefined && inTheme(hit));
+          const potential = rows
+            .filter((hit) => (hit.slot === null || hit.slot === undefined) && inTheme(hit))
+            .sort((a, b) => (b.firstTimeRaw ?? '').localeCompare(a.firstTimeRaw ?? ''));
           return (
             <section key={style} aria-label={styleLabels[style]} className="rounded-2xl border border-subtle bg-card/70 p-4">
               <h2 className={cn('mb-2 flex items-center gap-2 text-lg font-semibold', STYLE_TEXT[style])}>
@@ -292,36 +408,53 @@ export const LiveRadar: React.FC<{
               </h2>
               {rows.length ? (
                 <div className="space-y-2">
-                  {calls.map((hit) => (
-                    <HitRow
-                      key={`${hit.style}-${hit.code}`}
-                      hit={hit}
-                      principles={principles}
-                      t={t}
-                      isNew={newCodes.has(`${hit.style}:${hit.code}`)}
-                    />
-                  ))}
-                  {watch.length ? (
-                    <details className="rounded-xl border border-border/40 bg-elevated/20 px-3 py-2">
-                      <summary className="cursor-pointer text-[11px] text-cyan">
-                        {t('dabanKing.live.watchOnly', { n: watch.length })}
-                      </summary>
-                      <div className="mt-2 space-y-2">
-                        {watch.map((hit) => (
-                          <HitRow
-                            key={`${hit.style}-w-${hit.code}`}
-                            hit={hit}
-                            principles={principles}
-                            t={t}
-                            isNew={false}
-                          />
+                  <div role="tablist" aria-label={styleLabels[style]} className="flex gap-1.5">
+                    {(['locked', 'potential'] as const).map((key) => {
+                      const active = (laneTab[style] ?? 'locked') === key;
+                      const count = key === 'locked' ? locked.length : potential.length;
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          role="tab"
+                          aria-selected={active}
+                          onClick={() => setLaneTab((prev) => ({ ...prev, [style]: key }))}
+                          className={cn(
+                            'rounded-full border px-2.5 py-0.5 text-[11px] transition-colors',
+                            active
+                              ? 'border-cyan/60 bg-cyan/10 text-cyan'
+                              : 'border-border/50 text-secondary-text hover:text-foreground'
+                          )}
+                        >
+                          {key === 'locked'
+                            ? t('dabanKing.live.tabLocked', { n: count })
+                            : t('dabanKing.live.tabPotential', { n: count })}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {(laneTab[style] ?? 'locked') === 'locked' ? (
+                    locked.length ? (
+                      <div className="space-y-2">
+                        {locked.map((hit) => (
+                          <HitRow key={`${hit.style}-l-${hit.code}`} hit={hit} principles={principles} t={t}
+                                  isNew={newCodes.has(`${hit.style}:${hit.code}`)} />
                         ))}
                       </div>
-                    </details>
-                  ) : null}
-                  {!calls.length ? (
-                    <p className="text-xs text-secondary-text">{t('dabanKing.live.onlyWatch')}</p>
-                  ) : null}
+                    ) : (
+                      <p className="text-xs text-secondary-text">{t('dabanKing.live.noLocked')}</p>
+                    )
+                  ) : potential.length ? (
+                    <div className="space-y-2">
+                      {potential.map((hit) => (
+                        <HitRow key={`${hit.style}-p-${hit.code}`} hit={hit} principles={principles} t={t}
+                                isNew={newCodes.has(`${hit.style}:${hit.code}`)} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-secondary-text">{t('dabanKing.live.noPotential')}</p>
+                  )}
                 </div>
               ) : (
                 <p className="text-xs text-secondary-text">{t('dabanKing.live.noCalls')}</p>

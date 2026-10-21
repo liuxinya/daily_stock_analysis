@@ -282,7 +282,8 @@ function buildLive(overrides: Record<string, unknown> = {}) {
     hits: [
       {
         code: '002347', name: '泰尔股份', style: 'kobe', styleLabel: '92科比打法', action: 'actionable', actionLabel: '可执行',
-        positionPct: 25, status: 'sealed', slot: 1, lockedAt: '09:37:50', firstTime: '09:37:45', lastTime: '09:37:45', openNum: 1, sealed: true, limitPrice: 6.61,
+        positionPct: 25, status: 'sealed', slot: 1, lockedAt: '09:37:50',
+        firstTimeRaw: '093745', themeSource: 'reason', themeHint: '机器人', lockable: true, firstTime: '09:37:45', lastTime: '09:37:45', openNum: 1, sealed: true, limitPrice: 6.61,
         price: 6.61, changePct: 10, turnoverRate: 8.1, circMv: 3.3e9, sealAmount: 5e7, sealRatio: 0.015,
         reason: '工业机器人+冶金装备', highDays: '首板', limitUpType: '换手板', theme: '机器人', themeRank: 1,
         themeMain: true, novelty: '老题材', peers: 2, peerCodes: [], notes: [],
@@ -291,16 +292,53 @@ function buildLive(overrides: Record<string, unknown> = {}) {
       },
       {
         code: '600001', name: '甲股份', style: 'chen', styleLabel: '陈小群打法', action: 'trial', actionLabel: '试错',
-        positionPct: 5, status: 'opened', slot: 1, lockedAt: null, firstTime: '09:25:00', lastTime: '09:25:00', openNum: 0, sealed: true, limitPrice: 11,
+        positionPct: 5, status: 'opened', slot: 1, lockedAt: null,
+        firstTimeRaw: '092500', themeSource: '', themeHint: '', lockable: false, firstTime: '09:25:00', lastTime: '09:25:00', openNum: 0, sealed: true, limitPrice: 11,
         price: 11, changePct: 10, turnoverRate: 2, circMv: 4e9, sealAmount: 1e8, sealRatio: 0.025,
         reason: '人形机器人', highDays: '首板', limitUpType: '一字板', theme: '机器人', themeRank: 1,
         themeMain: true, novelty: '老题材', peers: 0, peerCodes: [], notes: ['竞价 / 开盘即封：多为一字板，打板买不到，只观察'],
         phase: '回暖期',
         reasons: [{ text: '前一交易日收盘为回暖期，原文此阶段「聚焦新题材首板/二板」', principleIds: ['C15'] }],
       },
+      {
+        code: '600005', name: '戊股份', style: 'kobe', styleLabel: '92科比打法', action: 'watch', actionLabel: '观察',
+        positionPct: 0, status: 'preboard', slot: null, lockedAt: null, gapPct: 4.2, volumeRatio: 3.1,
+        sealedInTheme: 7, themeNews: 30, firstTimeRaw: '103000', themeSource: 'history', themeHint: '人工智能', lockable: true,
+        firstTime: '10:30:00', lastTime: '—', openNum: 0, sealed: false, limitPrice: 20.5, price: 19.6,
+        changePct: 5.0, turnoverRate: 6.0, circMv: 5e9, sealAmount: null, sealRatio: null,
+        reason: '', highDays: '', limitUpType: '', theme: '人工智能', themeRank: 2, themeMain: true,
+        novelty: '新题材', peers: 7, peerCodes: [], phase: '主跌第 2 天',
+        notes: [], reasons: [{ text: '人工智能今日 7 只涨停', principleIds: ['C14'] }],
+      },
+      {
+        code: '600004', name: '丁股份', style: 'kobe', styleLabel: '92科比打法', action: 'watch', actionLabel: '观察',
+        positionPct: 0, status: 'preboard', slot: null, lockedAt: null, gapPct: 3.8, volumeRatio: 6.51,
+        sealedInTheme: 5, firstTimeRaw: '104000', themeSource: 'history', themeHint: '军工', lockable: false,
+        firstTime: '10:40:00', lastTime: '—', openNum: 0, sealed: false, limitPrice: 8.9, price: 8.57,
+        changePct: 5.3, turnoverRate: 7.2, circMv: 4.2e9, sealAmount: null, sealRatio: null,
+        reason: '', highDays: '', limitUpType: '', theme: '军工', themeRank: 3, themeMain: true,
+        novelty: '新题材', peers: 5, peerCodes: [], phase: '主跌第 2 天',
+        notes: ['未涨停：现价 8.57，涨停价 8.90，还差 3.8%'],
+        reasons: [{ text: '「军工」今日已 5 只涨停，资金在往这个方向走', principleIds: ['C14'] }],
+      },
+      {
+        code: '600003', name: '丙股份', style: 'kobe', styleLabel: '92科比打法', action: 'watch', actionLabel: '观察',
+        positionPct: 0, status: 'sealed', slot: null, lockedAt: null, gapPct: null, volumeRatio: null, sealedInTheme: null,
+        firstTimeRaw: '103000', themeSource: 'block', themeHint: '机器人概念', lockable: true,
+        firstTime: '10:30:00', lastTime: '10:30:00', openNum: 0, sealed: true, limitPrice: 12.3, price: 12.3,
+        changePct: 10, turnoverRate: 6, circMv: 4e9, sealAmount: 3e7, sealRatio: 0.008,
+        reason: '', highDays: '首板', limitUpType: '换手板', theme: '', themeRank: null, themeMain: false,
+        novelty: '', peers: 1, peerCodes: [], phase: '主跌第 2 天',
+        notes: ['今天「分 4 个票」的名额已锁定用满，只观察'],
+        reasons: [{ text: '同题材此前只有 1 只触板', principleIds: ['K33'] }],
+      },
     ],
     blocked: [{ code: '600002', name: '乙股份', style: 'chen', theme: '', reason: '陈小群线：前一交易日收盘为退潮期，此阶段不做首板' }],
     themes: [],
+    hotThemes: [
+      { key: '机器人概念', name: '机器人概念', rank: 1, quota: 4, used: 1, ztCount: 9, days: 4, share: 0.18, newsCount: 12, candidates: 2 },
+      { key: '人工智能', name: '人工智能', rank: 2, quota: 4, used: 0, ztCount: 7, days: 2, share: 0.14, newsCount: 30, candidates: 1 },
+    ],
     events: { recent: [{ code: '002347', name: '泰尔股份', type: 'FIRST_LIMIT', date: '2026-10-20', time: '093745', orderAmount: 5e7 }], counts: { first: 80, back: 12, failed: 30 } },
     degradedReasons: [],
     ...overrides,
@@ -340,6 +378,69 @@ describe('DabanKingPage live radar', () => {
     expect(within(chen).getByText('已炸板')).toBeInTheDocument();
     expect(screen.getByText(/2026-10-19 收盘的周期（由涨停池现算）/)).toBeInTheDocument();
     expect(screen.getByText(/今日不允许的涨停股/)).toBeInTheDocument();
+  });
+
+  it('separates locked slots from watch candidates and shows the theme source', async () => {
+    mockGetLive.mockResolvedValue(buildLive());
+    renderPage('/daban-king?tab=live');
+    const kobe = await screen.findByRole('region', { name: '92科比打法' });
+
+    // 默认「已锁定」：只有拿到名额的那只
+    expect(within(kobe).getByRole('tab', { name: /已锁定 1/ })).toBeInTheDocument();
+    expect(within(kobe).getByRole('tab', { name: /未锁定潜力股 3/ })).toBeInTheDocument();
+    expect(within(kobe).getByText('泰尔股份')).toBeInTheDocument();
+    expect(within(kobe).queryByText('丙股份')).not.toBeInTheDocument();
+
+    // 切到潜力股：未锁定的票出现，并标注题材来源（今日题材榜板块）
+    fireEvent.click(within(kobe).getByRole('tab', { name: /未锁定潜力股/ }));
+    // 最新的在最上面：未涨停的丁股份（10:40）排在已封板但没有名额的丙股份（10:30）之前
+    const potential = within(kobe).getAllByText(/丙股份|丁股份/).map((el) => el.textContent);
+    expect(potential[0]).toContain('丁股份');
+    expect(within(kobe).getByText('未涨停 · 还差 3.8%')).toBeInTheDocument();
+    expect(within(kobe).getByText('量比 6.51')).toBeInTheDocument();
+    expect(within(kobe).getByText('题材内已 5 只涨停')).toBeInTheDocument();
+    expect(within(kobe).getByText('丙股份')).toBeInTheDocument();
+    expect(within(kobe).getByText(/机器人概念/)).toBeInTheDocument();
+    expect(within(kobe).getByText(/今日题材榜板块/)).toBeInTheDocument();
+    expect(within(kobe).queryByText('泰尔股份')).not.toBeInTheDocument();
+  });
+
+  it('filters stocks by the chosen hot theme', async () => {
+    mockGetLive.mockResolvedValue(buildLive());
+    renderPage('/daban-king?tab=live');
+
+    // 今日主线题材卡片：显示涨停数 / 连续天数 / 新闻条数与候选数
+    expect(await screen.findByText('今日主线题材')).toBeInTheDocument();
+    expect(screen.getByText('涨停 9 · 连续 4 天 · 新闻 12 条')).toBeInTheDocument();
+    expect(screen.getAllByText('候选 2 只').length).toBeGreaterThan(0);
+    // 热度排名与名额：第 1 名 4 个名额，已用 1
+    expect(screen.getByText('名额 1/4')).toBeInTheDocument();
+    expect(screen.getByText('名额 0/4')).toBeInTheDocument();
+
+    const kobe = screen.getByRole('region', { name: '92科比打法' });
+    fireEvent.click(within(kobe).getByRole('tab', { name: /未锁定潜力股/ }));
+    expect(within(kobe).getByText('丁股份')).toBeInTheDocument();
+    expect(within(kobe).getByText('戊股份')).toBeInTheDocument();
+
+    // 点「人工智能」只剩该题材的票
+    fireEvent.click(screen.getByRole('tab', { name: /人工智能/ }));
+    expect(within(kobe).getByText('戊股份')).toBeInTheDocument();
+    expect(within(kobe).queryByText('丁股份')).not.toBeInTheDocument();
+
+    // 回到全部
+    fireEvent.click(screen.getByRole('tab', { name: '全部题材' }));
+    expect(within(kobe).getByText('丁股份')).toBeInTheDocument();
+  });
+
+  it('marks a theme as pending instead of claiming none', async () => {
+    mockGetLive.mockResolvedValue(buildLive({
+      hits: [{
+        ...buildLive().hits[1],
+      }],
+    }));
+    renderPage('/daban-king?tab=live');
+    const chen = await screen.findByRole('region', { name: '陈小群打法' });
+    expect(within(chen).getAllByText(/题材待公布|一字板/).length).toBeGreaterThan(0);
   });
 
   it('warns when there is no previous review to gate on', async () => {

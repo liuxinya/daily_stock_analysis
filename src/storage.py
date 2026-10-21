@@ -545,6 +545,8 @@ class DabanLiveHit(Base):
     limit_price = Column(Float)
     position_pct = Column(Integer)
     slot = Column(Integer)  # 锁定的名额序号（1 起）；一旦给出当天不再变
+    gap_pct = Column(Float)  # 未涨停候选记录当时距涨停价的百分点（仅 origin=preboard）
+    seen_price = Column(Float)  # 给出这一条时的现价（锁定=此刻还能按这个价附近买）
     sealed_close = Column(Boolean)
     open_count = Column(Integer)
     theme = Column(String(64))
@@ -1745,6 +1747,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             "position_pct": "INTEGER",
             "origin": "VARCHAR(8)",
             "slot": "INTEGER",
+            "gap_pct": "FLOAT",
+            "seen_price": "FLOAT",
         }
         for column, ddl in wanted.items():
             if column in existing:

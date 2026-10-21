@@ -680,7 +680,10 @@ class DabanService:
         for style in STYLES:
             mine = [r for r in rows if r["style"] == style and r["action"] in (ACTION_ACTIONABLE, ACTION_TRIAL)]
             changes = [float(r["next_day_change_pct"]) for r in mine if r["next_day_change_pct"] is not None]
+            pre = [r for r in rows if r["style"] == style and r.get("origin") == "preboard"]
             out[style] = {
+                "preboard": len(pre),
+                "preboard_sealed": round(sum(1 for r in pre if r.get("sealed_close")) / len(pre), 4) if pre else None,
                 "days": len({r["trade_date"] for r in mine}),
                 "picks": len(mine),
                 "avg": round(mean(changes), 2) if changes else None,
@@ -706,10 +709,15 @@ class DabanService:
             rows=zt, broken=zb, phase=phase, rules=self.rules, memory=radar.memory(until=day),
             recent_mains=phase.get("recent_mains"),
             yesterday_codes=set(phase.get("yesterday_codes") or []) | set(yesterday_codes or []),
-            max_picks=radar.max_picks, locked=radar.locked(day),
+            max_picks=radar.max_picks, locked=radar.locked(day), blocks=radar.blocks(),
+            prev_blocks=radar.previous_block_counts(day),
+            news_lookup=radar.theme_news, concepts_lookup=radar.stock_concepts,
+            yesterday_weak=set(phase.get("yesterday_broken") or ()) | set(phase.get("yesterday_codes") or ()),
         )
         calls = [h for h in built["hits"] if h["action"] in (ACTION_ACTIONABLE, ACTION_TRIAL)]
         if persist:
+            # 未涨停候选：收盘时看它最终有没有封住（不占名额，只用于统计「候选封板率」）。
+            self.repository.mark_preboard_seals(day, {h["code"] for h in zt})
             records = []
             for hit in calls:
                 record = live_hit_record(hit, origin="close")
@@ -749,7 +757,8 @@ class DabanService:
         rows = self.repository.reviewed_live_hits(limit_days=20, before=next_trade_date(day))
         out: Dict[str, Any] = {}
         for style in STYLES:
-            mine = [r for r in rows if r["style"] == style and r.get("next_close_ret") is not None]
+            mine = [r for r in rows if r["style"] == style and r.get("next_close_ret") is not None
+                    and r.get("origin") != "preboard"]
             changes = [float(r["next_close_ret"]) for r in mine]
             opens = [float(r["next_open_ret"]) for r in mine if r.get("next_open_ret") is not None]
             out[style] = {

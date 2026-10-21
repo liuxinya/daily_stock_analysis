@@ -366,13 +366,22 @@ export type DabanLiveHit = {
   action: DabanAction;
   actionLabel: string;
   positionPct: number;
-  /** sealed = 当前封着；opened = 触板后已炸开；missing = 已锁定但这一轮上游没返回它 */
-  status: 'sealed' | 'opened' | 'missing';
+  /** sealed = 当前封着；opened = 触板后已炸开；preboard = 还没涨停正在拉升；missing = 已锁定但这一轮上游没返回它 */
+  status: 'sealed' | 'opened' | 'preboard' | 'missing';
+  /** 距涨停价还差几个百分点（仅 preboard） */
+  gapPct?: number | null;
+  /** 量比（仅 preboard，来自腾讯快照） */
+  volumeRatio?: number | null;
+  /** 该题材今日已涨停几只（preboard 的「资金合力」证据） */
+  sealedInTheme?: number | null;
+  /** 该题材近 3 日新闻条数（preboard 的新闻门槛）；null = 还没取到 */
+  themeNews?: number | null;
   /** 先到先得分到的名额序号（1 起）；没分到名额为 null */
   slot: number | null;
   /** 名额锁定的时刻（HH:MM:SS）；本轮新分配的为 null */
   lockedAt: string | null;
   firstTime: string;
+  firstTimeRaw: string;
   lastTime: string;
   openNum: number;
   sealed: boolean | null;
@@ -390,11 +399,30 @@ export type DabanLiveHit = {
   themeRank: number | null;
   themeMain: boolean;
   novelty: string;
+  /** reason = 当日涨停原因；history = 历史涨停原因；block = 当日题材榜；concept = 东财所属概念；空 = 还不知道 */
+  themeSource: 'reason' | 'history' | 'block' | 'concept' | 'record' | '';
+  themeHint: string;
+  /** 首次封板时间未知（集合竞价）时不可占名额 */
+  lockable: boolean;
   peers: number;
   peerCodes: string[];
   reasons: DabanCited[];
   notes: string[];
   phase: string | null;
+};
+
+export type DabanHotTheme = {
+  key: string;
+  name: string;
+  ztCount: number;
+  days: number;
+  share: number;
+  newsCount: number | null;
+  candidates: number;
+  quota: number;
+  used: number;
+  novelty?: string;
+  rank?: number | null;
 };
 
 export type DabanLiveEvent = { code: string; name: string; type: string; date: string; time: string; orderAmount: number | null };
@@ -437,6 +465,8 @@ export type DabanLive = {
     chen?: string;
     kobeAction?: string | null;
     chenAction?: string | null;
+    /** 陈小群弱转强的放行级别（首板与弱转强的门控不同） */
+    chenW2sAction?: string | null;
     source?: 'review' | 'computed';
     tradeDate?: string;
   };
@@ -444,6 +474,8 @@ export type DabanLive = {
   hits: DabanLiveHit[];
   blocked: { code: string; name: string; style: DabanStyle; theme: string; reason: string }[];
   themes: DabanTheme[];
+  /** 今日热点题材（够热 + 在升温 + 有新闻），页面用作筛选 tab */
+  hotThemes: DabanHotTheme[];
   events: {
     recent?: DabanLiveEvent[];
     counts?: { first?: number; back?: number; failed?: number };
