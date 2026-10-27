@@ -54,6 +54,13 @@ _MEMORY_CACHE: Dict[str, Tuple[float, Dict[str, set]]] = {}
 # 前一交易日上下文：键为前一交易日；值为 (写入时间, 上下文)。现算结果 10 分钟内有效，期间若生成了复盘会自动切换。
 _PREV_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _BLOCK_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+# 实时周期的补充取数（当日跌停池、昨日涨停今日表现）与阶段历史；值为 (写入时间, 数据)。
+_CYCLE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_HISTORY_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+# 实时门控的当日状态：涨停峰值与连续确认轮数。键为交易日。
+_RT_STATE: Dict[str, Dict[str, Any]] = {}
+# 拉升异动：键为异动类型；值为 (写入时间, 事件列表)。取数失败时沿用最近一次成功结果（见 ``_changes``）。
+_CHANGE_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _PREV_BLOCK_CACHE: Dict[str, Dict[str, int]] = {}
 _NEWS_CACHE: Dict[str, Tuple[float, int]] = {}
 _NEWS_INFLIGHT: set = set()
@@ -64,17 +71,18 @@ _ALLOCATION_LOCK = threading.RLock()
 
 # 每派、每个阶段的理由与出处。原文没有说过的不挂出处。
 KOBE_PHASE_REASONS = {
-    "low_shock": ("前一交易日处于低位震荡：这是题材试错期，低位试错要有勇气，只做绝对低位的首板", ["K39", "K33"]),
-    "main_rise": ("前一交易日处于主升段：绝对低位做首板", ["K33"]),
-    "high_shock": ("前一交易日处于高位震荡：轻仓应对，只做绝对低位的首板", ["K08", "K33"]),
-    "fall_2": ("前一交易日是主跌第二天：第二天的杀跌如果还在持续，尾盘就可以找买点，第三天肯定会有情绪的修复", ["K09"]),
+    "low_shock": ("当前周期为低位震荡：这是题材试错期，低位试错要有勇气，只做绝对低位的首板", ["K39", "K33"]),
+    "main_rise": ("当前周期为主升段：绝对低位做首板", ["K33"]),
+    "high_shock": ("当前周期为高位震荡：轻仓应对，只做绝对低位的首板", ["K08", "K33"]),
+    "fall_2": ("今天是主跌第二天：第二天的杀跌如果还在持续，尾盘就可以找买点，第三天肯定会有情绪的修复", ["K09"]),
+    "fall_2_early": ("今天是主跌第二天，但原文的买点在尾盘：尾盘之前只试错，不给可执行", ["K09"]),
     "fall_3": ("主跌已持续三天以上：主跌之后回到低位试错期，试错要有勇气", ["K39", "K09"]),
 }
 CHEN_PHASE_REASONS = {
-    "ice": ("前一交易日收盘为冰点期：不抄底，只观察新题材萌芽", ["C16"]),
-    "warm": ("前一交易日收盘为回暖期：聚焦新题材首板/二板，轻仓试错", ["C15", "C24"]),
-    "ferment": ("前一交易日收盘为发酵期：围绕龙头或换手龙介入，首板只观察", ["C17"]),
-    "climax": ("前一交易日收盘为高潮期：坚定锁仓龙头，首板只观察", ["C23"]),
+    "ice": ("当前周期为冰点期：不抄底，只观察新题材萌芽", ["C16"]),
+    "warm": ("当前周期为回暖期：聚焦新题材首板/二板，轻仓试错", ["C15", "C24"]),
+    "ferment": ("当前周期为发酵期：围绕龙头或换手龙介入，首板只观察", ["C17"]),
+    "climax": ("当前周期为高潮期：坚定锁仓龙头，首板只观察", ["C23"]),
 }
 LIVE_SELL_RULES = {
     STYLE_KOBE: [
@@ -146,6 +154,38 @@ def _theme_for(tags: set, themes: List[Dict[str, Any]], stock_themes: Dict[str, 
     return None
 
 
+def _hot_index(hot: Optional[List[Dict[str, Any]]]) -> Dict[str, str]:
+    """归一化题材名 → 今日热点题材 key。
+
+    同一个题材在两套口径里写法不同：题材榜给「机器人概念」，涨停原因聚类出来的是「机器人」
+    （``normalize_tag`` 会把「概念 / 板块 / 产业链」后缀去掉）。归一后它们是同一个 key。
+    """
+    index: Dict[str, str] = {}
+    for item in hot or []:
+        key = str(item.get("key") or "")
+        if key:
+            index.setdefault(normalize_tag(key), key)
+    return index
+
+
+def _hot_key_for(tags: Iterable[str], hot: Optional[List[Dict[str, Any]]], index: Dict[str, str]) -> str:
+    """把一只票的题材标签落到今日热点题材上，返回热点题材的 key。
+
+    先归一后精确匹配，再按「互相包含」取最热的一个（``hot`` 已按热度排序）。贴不上返回空串——
+    这种票不占题材名额，页面上只在「全部题材」里出现。
+    """
+    names = [str(tag) for tag in tags if tag]
+    for name in names:
+        key = index.get(normalize_tag(name))
+        if key:
+            return key
+    for item in hot or []:
+        key = str(item.get("key") or "")
+        if key and _related(names, [key]):
+            return key
+    return ""
+
+
 def _peers(code: str, first: str, own: set, touches: List[Dict[str, Any]], tags_of: Dict[str, set]) -> List[str]:
     """同题材里，**在它首次触板之前**已经触板（含后来炸板）的股票。只看之前，没有前视。"""
     if not own or not first:
@@ -176,6 +216,189 @@ def _position(style: str, action: str, rules: Dict[str, Any]) -> int:
     return int(table.get("actionable" if action == ACTION_ACTIONABLE else "trial", 25 if action == ACTION_ACTIONABLE else 10))
 
 
+_GATE_RANK = {None: 0, ACTION_WATCH: 1, ACTION_TRIAL: 2, ACTION_ACTIONABLE: 3}
+
+
+def _advance_fall_day(gate_key: str) -> str:
+    """盘前只能假设「今天延续昨天」：昨天是主跌第 N 天，今天就按第 N+1 天门控。
+
+    科比原话「第一天杀跌是很恐怖的，但是**第二天**的杀跌如果还是持续的话，尾盘就可以找买点」说的是
+    **当天**是主跌第几天；回测里「主跌第 2 天 +1.95%」也标在买入当天。所以门控表的键一律按「今日是
+    主跌第几天」理解：盘前用前一交易日的天数 +1 做估计，盘中由实时重判按今天的 tape 纠正。
+    """
+    if not str(gate_key or "").startswith("fall_"):
+        return gate_key
+    try:
+        day = int(str(gate_key).split("_")[1])
+    except (IndexError, ValueError):
+        return gate_key
+    return f"fall_{min(day + 1, 3)}"
+
+
+def _minus_minutes(now: str, minutes: int) -> str:
+    """``HHMMSS`` 往前推 N 分钟（只用于盘中同一天的比较，不跨日）。"""
+    text = str(now or "").strip()
+    if len(text) < 4 or not text[:4].isdigit():
+        return "000000"
+    total = max(0, int(text[:2]) * 60 + int(text[2:4]) - max(0, int(minutes)))
+    return f"{total // 60:02d}{total % 60:02d}00"
+
+
+def _theme_accelerating(
+    rows: List[Dict[str, Any]], hot: List[Dict[str, Any]], *, now: str, window_min: int, min_new: int,
+) -> Optional[str]:
+    """最近 ``window_min`` 分钟内有没有热点题材在加速封板。
+
+    这是降级的豁免条件：大盘或昨日主线走弱，但资金只是换了题材（科比讲的「切换」——「但凡没有原来
+    题材属性的股票和板块，都是资金愿意尝试的板块」），就不该停发名额，否则正好错过轮动那一波。
+    归因用涨停原因（覆盖率接近 100%），不用题材榜成员（上游只给每个板块很少几只）。
+    """
+    cutoff = _minus_minutes(now, window_min)
+    names = [str(item.get("name") or "") for item in (hot or []) if item.get("name")]
+    if not names:
+        return None
+    counts: Dict[str, int] = {}
+    for row in rows or []:
+        first = str(row.get("first_time") or "")
+        if not _valid_time(first) or first < cutoff:
+            continue
+        tags = split_reason(row.get("reason") or "")
+        for name in names:
+            if tags and _related(tags, [name]):
+                counts[name] = counts.get(name, 0) + 1
+    if not counts:
+        return None
+    name, count = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
+    return name if count >= max(1, int(min_new)) else None
+
+
+def _fall_label(gate_key: str) -> str:
+    """``fall_2`` / ``fall_2_early`` → 「主跌第 2 天」。只用于把生效门控键说成人话。"""
+    text = str(gate_key or "")
+    if not text.startswith("fall_"):
+        return ""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return f"主跌第 {digits} 天" if digits else ""
+
+
+def _late_swap(rules: Dict[str, Any], gate_key: str, now: str) -> str:
+    """科比「第二天的杀跌如果还是持续的话，**尾盘**就可以找买点」：主跌第 2 天的可执行只在尾盘放行，
+    尾盘之前按试错对待（原文此时还在等买点，不是不看）。"""
+    if gate_key != "fall_2":
+        return gate_key
+    late = str((rules.get("realtime_gate") or {}).get("fall2_late_time", "140000"))
+    return gate_key if str(now or "") >= late else "fall_2_early"
+
+
+def realtime_phase(
+    *, metrics: Dict[str, Any], prev_stage: Optional[str], history: List[Dict[str, Any]], rules: Dict[str, Any],
+) -> Dict[str, Any]:
+    """用**今天的** tape 现算今天的周期（陈小群六阶段 + 科比四阶段），口径与盘后复盘完全一致。"""
+    from src.services.daban import cycle as cycle_mod
+
+    stage = cycle_mod.classify_stage(metrics, prev_stage=prev_stage, rules=rules)
+    kobe = cycle_mod.kobe_phase(stage["key"], metrics, history or [])
+    return {"stage": stage, "kobe_stage": kobe}
+
+
+def _apply_upgrade(rules: Dict[str, Any], base_keys: Dict[str, str], today: Dict[str, Any],
+                   now: str) -> Dict[str, Any]:
+    """只往更放行的方向替换门控键：市场验证过的今天的周期，比昨天的收盘更有发言权。"""
+    today_keys = {STYLE_CHEN: str((today.get("stage") or {}).get("key") or ""),
+                  STYLE_KOBE: _late_swap(rules, str((today.get("kobe_stage") or {}).get("gate_key") or ""), now)}
+    keys, changed = dict(base_keys), False
+    for style in STYLES:
+        base, fresh = base_keys[style], today_keys[style]
+        if not fresh or fresh == base:
+            continue
+        if _GATE_RANK.get(_gate(rules, style, fresh), 0) > _GATE_RANK.get(_gate(rules, style, base), 0):
+            keys[style], changed = fresh, True
+    return {"keys": keys, "changed": changed}
+
+
+def decide_realtime_gate(
+    *,
+    rules: Dict[str, Any],
+    phase: Dict[str, Any],
+    metrics: Dict[str, Any],
+    today: Dict[str, Any],
+    now: str,
+    accel_theme: Optional[str],
+    state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """盘中实时门控：前一交易日的周期做底线，今天的 tape 给出市场验证后按今天的周期行事。
+
+    - **升级**（赚钱效应恢复）：昨日涨停今日溢价转正（科比 #28「看昨日涨停股今日表现」、陈小群五大
+      指标之一）、涨停数不低于昨日收盘、封板质量过关（炸板率不高）。满足后按今天的周期查门控表，
+      **只在更放行的方向生效**。
+    - **降级**（资金撤了）：溢价转负是必要条件，再叠加炸板率抬升 / 跌停增多 / 涨停数从当日峰值回落
+      中任意一条。**但只要还有热点题材在加速封板就不降级**——那是资金在换题材，不是在撤（科比讲的
+      「切换」）。降级只停发新名额，已锁定的不动：A 股 T+1 撤不回来，成绩单也必须记当时真实给出的票。
+    - 两者都要连续 ``confirm_rounds`` 轮满足才生效，且当日涨停数要到 ``min_zt_sample`` 才开始判。
+    """
+    cfg = (rules.get("realtime_gate") or {})
+    base_keys = {STYLE_CHEN: str(phase.get("chen_stage") or ""),
+                 STYLE_KOBE: _late_swap(rules, _advance_fall_day(str(phase.get("kobe_gate") or "")), now)}
+    out: Dict[str, Any] = {
+        "enabled": bool(cfg.get("enabled", True)),
+        "active": False, "upgraded": False, "frozen": False,
+        "keys": dict(base_keys), "accel_theme": accel_theme, "reason": "",
+        "labels": {STYLE_CHEN: phase.get("chen_label") or "",
+                   STYLE_KOBE: _fall_label(base_keys[STYLE_KOBE]) or phase.get("kobe_label") or ""},
+        "today_stage": (today.get("stage") or {}).get("key"),
+        "today_label": (today.get("stage") or {}).get("label"),
+        "today_kobe": (today.get("kobe_stage") or {}).get("gate_key"),
+        "today_kobe_label": (today.get("kobe_stage") or {}).get("label"),
+    }
+    zt, sample = int(metrics.get("zt_count") or 0), int(cfg.get("min_zt_sample", 20))
+    if not out["enabled"]:
+        return out
+    if zt < sample:
+        out["reason"] = f"当日涨停 {zt} 只不足 {sample} 只，样本太小，仍按前一交易日的周期门控"
+        return out
+    out["active"] = True
+    state["zt_peak"] = peak = max(int(state.get("zt_peak") or 0), zt)
+    premium, zab = metrics.get("yzt_premium"), metrics.get("zab_rate")
+    prev_zt = int(((phase.get("metrics") or {}).get("zt_count")) or 0)
+    prev_dt = int(((phase.get("metrics") or {}).get("dt_count")) or 0)
+    zab_max, rounds = float(cfg.get("zab_rate_max", 0.35)), max(1, int(cfg.get("confirm_rounds", 2)))
+
+    up_ok = (premium is not None and premium > 0 and zt >= prev_zt and (zab is None or zab <= zab_max))
+    weak_bits: List[str] = []
+    if zab is not None and zab > zab_max:
+        weak_bits.append(f"炸板率 {zab:.0%} 高于 {zab_max:.0%}")
+    if int(metrics.get("dt_count") or 0) > prev_dt:
+        weak_bits.append(f"跌停 {metrics.get('dt_count')} 只多于昨日 {prev_dt} 只")
+    if peak > 0 and (peak - zt) / peak >= float(cfg.get("peak_drawdown", 0.3)):
+        weak_bits.append(f"涨停数从当日峰值 {peak} 回落到 {zt}")
+    down_ok = premium is not None and premium < 0 and bool(weak_bits)
+
+    state["up_rounds"] = (state.get("up_rounds") or 0) + 1 if up_ok else 0
+    state["down_rounds"] = (state.get("down_rounds") or 0) + 1 if down_ok else 0
+    premium_text = f"{premium:+.2f}%" if premium is not None else "未取到"
+    if state["up_rounds"] >= rounds:
+        applied = _apply_upgrade(rules, base_keys, today, now)
+        out["keys"], out["upgraded"] = applied["keys"], applied["changed"]
+        if applied["changed"]:
+            out["labels"] = {STYLE_CHEN: out["today_label"] or out["labels"][STYLE_CHEN],
+                             STYLE_KOBE: out["today_kobe_label"] or out["labels"][STYLE_KOBE]}
+        out["reason"] = (f"昨日涨停今日溢价 {premium_text}、当日涨停 {zt} 只（昨收 {prev_zt}）"
+                         f"{'、炸板率 %.0f%%' % (zab * 100) if zab is not None else ''}："
+                         f"赚钱效应已被市场验证，按今天的周期（{out['today_label'] or '—'}）门控")
+    elif state["down_rounds"] >= rounds:
+        if accel_theme:
+            out["reason"] = (f"赚钱效应回落（溢价 {premium_text}、{weak_bits[0]}），但「{accel_theme}」"
+                             f"还在加速封板——资金在换题材不是在撤，不停发名额")
+        else:
+            out["frozen"] = True
+            out["reason"] = (f"赚钱效应回落（溢价 {premium_text}、{weak_bits[0]}）且没有题材在接力："
+                             f"停发新名额，已锁定的按本派卖出纪律处理")
+    else:
+        out["reason"] = (f"实时重判已开启（当日涨停 {zt} 只）：还需连续 {rounds} 轮确认，"
+                         f"当前按前一交易日的周期门控")
+    return out
+
+
 def filter_reasons(items: List[Dict[str, Any]], style: str) -> List[Dict[str, Any]]:
     out = []
     for item in items:
@@ -185,10 +408,29 @@ def filter_reasons(items: List[Dict[str, Any]], style: str) -> List[Dict[str, An
     return out
 
 
+NAMELESS_REASON = (
+    "师出无名：没有当日涨停原因、近 90 天涨停记录，所属概念也挂不上今天在涨停的题材——"
+    "两派都只做有题材逻辑的票"
+)
+
+
 def _blocked_reason(style: str, phase: Dict[str, Any]) -> str:
     if style == STYLE_KOBE:
-        return f"科比线：前一交易日处于{phase.get('kobe_label') or '—'}，此阶段不打首板（第一天杀跌是很恐怖的）"
-    return f"陈小群线：前一交易日收盘为{phase.get('chen_label') or '—'}，此阶段不做首板"
+        return f"科比线：当前周期判定为{phase.get('kobe_label') or '—'}，此阶段不打首板（第一天杀跌是很恐怖的）"
+    return f"陈小群线：当前周期判定为{phase.get('chen_label') or '—'}，此阶段不做首板"
+
+
+def _phase_reason(style: str, phase: Dict[str, Any], rules: Dict[str, Any]) -> Dict[str, Any]:
+    """门控的具体原因：放行的阶段给该派原话，关闭的阶段给「此阶段不打首板」的理由。
+
+    页面上的「今日门控」卡要能直接看出「为什么今天不出手」，不用用户去翻被挡列表里的某一只票。
+    """
+    key = (phase.get("kobe_gate") if style == STYLE_KOBE else phase.get("chen_stage")) or ""
+    if _gate(rules, style, key) is None:
+        return {"text": _blocked_reason(style, phase), "principle_ids": []}
+    table = KOBE_PHASE_REASONS if style == STYLE_KOBE else CHEN_PHASE_REASONS
+    text, ids = table.get(key, ("", []))
+    return {"text": text, "principle_ids": list(ids)}
 
 
 # ---------------------------------------------------------------------- 核心：今天的首板，两派能不能打
@@ -227,6 +469,7 @@ def build_hits(
     news_lookup: Optional[Any] = None,
     concepts_lookup: Optional[Any] = None,
     yesterday_weak: Optional[set] = None,
+    freeze: bool = False,
 ) -> Dict[str, Any]:
     """给定「当前涨停池 / 炸板池」与「前一交易日的周期」，算出两派各自能做什么。
 
@@ -243,8 +486,8 @@ def build_hits(
     themes = theme_result["themes"]
     stock_themes = theme_result["stock_themes"]
     touches = _touches(rows, broken, yesterday)
-    # 涨停原因是首选；没有（集合竞价期间上游不给）时依次退到历史涨停原因、当日题材榜的板块归属。
-    # 题材榜是「现在哪些板块在涨停」的直接答案，比历史记忆更贴近当下热点。
+    # 涨停原因是首选；没有（集合竞价期间上游不给）时依次退到历史涨停原因、当日题材榜的板块归属、
+    # 所属概念。题材榜是「现在哪些板块在涨停」的直接答案，比历史记忆更贴近当下热点。
     block_names = _code_blocks(blocks or [])
     tags_of: Dict[str, set] = {}
     tags_source: Dict[str, str] = {}
@@ -261,6 +504,31 @@ def build_hits(
         tags_of[row["code"]] = board
         tags_source[row["code"]] = "block" if board else ""
 
+    # 第四级：东财选股器的所属概念。同花顺炸板池不给涨停原因（实测当日 100% 为空），这些票既没有
+    # 当日原因、也常常没有历史涨停记录。概念列表很宽（一只票挂 30 多个很常见），整份拿来当题材等于
+    # 随便挂一个，所以只取**与当日题材 / 题材榜相交**的那部分，并取其中最热的一个：「它的概念里正好
+    # 有一个今天在涨停的题材」才算师出有名。
+    heat_by_name = [(t["key"], int(t.get("zt_count") or 0)) for t in themes]
+    heat_by_name += [(str(b.get("name") or ""), int(b.get("limit_up_num") or 0)) for b in (blocks or [])]
+    nameless = sorted(code for code, tags in tags_of.items() if not tags)
+    concepts_checked = False
+    if nameless and concepts_lookup is not None:
+        try:
+            extra = concepts_lookup(nameless) or {}
+        except Exception as exc:
+            logger.warning("打板王雷达：涨停 / 炸板股概念兜底取数失败 %s", exc)
+            extra = {}
+        # 整批都没返回说明接口没给数据（不是这些票都没概念）：这一级按「没查过」处理，宁可保留也不舍弃。
+        concepts_checked = bool(extra)
+        for code in nameless:
+            info = extra.get(code) or {}
+            raw = [*(info.get("concepts") or []), info.get("industry") or ""]
+            matched = sorted(((heat, name) for name, heat in heat_by_name
+                              if name and _related(raw, [name])), reverse=True)
+            if matched:
+                tags_of[code] = {matched[0][1]}
+                tags_source[code] = "concept"
+
     min_peers = int(rules.get("live_chen_min_peers", 2))
     open_time = str(rules.get("live_open_time", "093100"))
     late = str(rules.get("weak_late_time", "143000"))
@@ -275,6 +543,9 @@ def build_hits(
         own = tags_of.get(code) or set()
         theme = _theme_for(own, themes, stock_themes, code)
         peer_codes = _peers(code, first_time, own, touches, tags_of)
+        # 师出无名：四级来源都查过还是没有任何涨停原因 / 题材。科比要「有逻辑的低位首板」、陈小群要
+        # 「新题材 + 资金合力」，两派都不打无名票，所以这种票不进名单，只在「今日不允许」里留痕。
+        nameless_row = concepts_checked and not own and theme is None
         quote = quotes.get(code) or {}
         if row["status"] == "opened":
             sealed: Optional[bool] = False
@@ -333,6 +604,10 @@ def build_hits(
             if action is None:
                 blocked.append({"code": code, "name": row.get("name") or "", "style": style,
                                 "theme": theme["name"] if theme else "", "reason": _blocked_reason(style, phase)})
+                continue
+            if nameless_row:
+                blocked.append({"code": code, "name": row.get("name") or "", "style": style,
+                                "theme": "", "reason": NAMELESS_REASON})
                 continue
             if cap_watch:
                 action = ACTION_WATCH
@@ -394,8 +669,18 @@ def build_hits(
     )
     hits.extend(preboard_hits)
 
+    # 每只票落在哪个今日热点题材上。题材名额、页面筛选、题材卡片上的候选数全部用这个 key，
+    # 避免「机器人」（涨停原因聚类）和「机器人概念」（题材榜）被当成两个题材——那会让页面
+    # 按题材一筛就什么都剩不下。
+    hot_index = _hot_index(hot_themes)
+    for hit in hits:
+        hit["theme_key"] = _hot_key_for(
+            [hit.get("theme") or "", *(tags_of.get(hit["code"]) or ())], hot_themes, hot_index,
+        )
+
     lanes = _allocate(hits, phase=phase, rules=rules, max_picks=max_picks, locked=locked or {},
-                      hot=hot_themes)
+                      hot=hot_themes, freeze=freeze)
+    _theme_counts(hits, hot_themes)
     hits.sort(key=lambda h: (h["style"], ACTION_ORDER[h["action"]], h["first_time_raw"]))
     return {
         "hits": hits,
@@ -468,6 +753,7 @@ def _hot_themes(
     hot = [h for h in hot if h["news_count"] is None or h["news_count"] >= news_min]
     hot.sort(key=lambda h: (-int(h["zt_count"] or 0), -(h.get("news_count") or 0)))
     # 热度排名决定锁定名额：前 N 名各 4 个（可配），其余各 2 个。盘中新题材挤进前 N 名时自动变成 4 个。
+    # 名额是「每派各自」的，不是两派共用，见 _allocate。
     top_n = int(cfg.get("quota_top_n", 3))
     quota_top = int(cfg.get("quota_top", 4))
     quota_other = int(cfg.get("quota_other", 2))
@@ -610,14 +896,14 @@ def _preboard_hits(
                          else "新闻数据未取到")
             if kind == "w2s":
                 reasons = [
-                    {"text": "昨日是弱板（炸板 / 烂板 / 涨停后没走强），今天正在被买上去——弱转强的观察窗口",
+                    {"text": "昨日是弱板（炸板 / 盘中开过板 / 尾盘偷鸡板），今天正在被买上去——弱转强的观察窗口",
                      "principle_ids": ["C04", "K27"]},
                     {"text": f"「{theme['name']}」今日已 {theme['zt_count']} 只涨停，有板块效应可以配合",
                      "principle_ids": ["C04"]},
                     {"text": f"{news_text}，题材有催化", "principle_ids": ["K19"]},
                 ]
                 notes = [
-                    f"弱转强：昨日炸板，今日涨 {row.get('change_pct') or 0:.1f}%，距涨停 {row['gap_pct']:.1f}%",
+                    f"弱转强：昨日弱板，今日涨 {row.get('change_pct') or 0:.1f}%，距涨停 {row['gap_pct']:.1f}%",
                     "触发：开盘后被买上去、封板时扫板（不是竞价高开）；板块要有跟随",
                 ]
                 mode = MODE_WEAK_TO_STRONG
@@ -652,17 +938,47 @@ def _preboard_hits(
                 "phase": phase.get("kobe_label") if style == STYLE_KOBE else phase.get("chen_label"),
                 "mode": mode, "gate_action": action,
             })
-    counts: Dict[str, int] = {}
-    for hit in out:
-        counts[hit["theme"]] = counts.get(hit["theme"], 0) + 1
-    for item in hot:
-        item["candidates"] = counts.get(item["name"], 0)
     return out
 
 
-def _hit_from_record(record: Dict[str, Any], style: str, phase: Dict[str, Any]) -> Dict[str, Any]:
+def _theme_counts(hits: List[Dict[str, Any]], hot: Optional[List[Dict[str, Any]]]) -> None:
+    """把分配结果回写到题材卡片：每派各自的「已锁定名额」与「未锁定候选」。
+
+    必须**分派统计**：``_allocate`` 里每派按自己已锁定的票独立消耗题材名额，两派名额互不相通，
+    把两派加在一起显示会让一个题材看起来早就满了。
+
+    候选数和页面「未锁定潜力股」标签取自同一组 ``hits``、同一个判据（有没有拿到名额），所以
+    点某个题材时两个数一定对得上；这里必须在 ``_allocate`` 之后调用，名额此时才定下来。
+    """
+    locked_by: Dict[str, Dict[str, int]] = {}
+    free_by: Dict[str, Dict[str, int]] = {}
+    for hit in hits:
+        key = str(hit.get("theme_key") or "")
+        if not key:
+            continue
+        bucket = locked_by if hit.get("slot") is not None else free_by
+        per_style = bucket.setdefault(key, {})
+        per_style[hit["style"]] = per_style.get(hit["style"], 0) + 1
+    for item in hot or []:
+        key = str(item.get("key") or "")
+        used, free = locked_by.get(key, {}), free_by.get(key, {})
+        item["by_style"] = {style: {"used": used.get(style, 0), "candidates": free.get(style, 0)}
+                            for style in STYLES}
+        item["used"] = sum(used.values())
+        item["candidates"] = sum(free.values())
+
+
+def _hit_from_record(
+    record: Dict[str, Any],
+    style: str,
+    phase: Dict[str, Any],
+    *,
+    hot: Optional[List[Dict[str, Any]]] = None,
+    hot_index: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """已锁定、但这一轮在涨停池 / 炸板池里都看不到的票（上游缺数据）：照留档原样显示，名额不动。"""
     first = str(record.get("first_time") or "")
+    theme = record.get("theme") or ""
     return {
         "code": record["code"], "name": record.get("name") or "", "style": style, "style_label": STYLE_LABELS[style],
         "action": record.get("action") or ACTION_TRIAL, "action_label": ACTION_LABELS.get(record.get("action"), ""),
@@ -670,9 +986,10 @@ def _hit_from_record(record: Dict[str, Any], style: str, phase: Dict[str, Any]) 
         "first_time": _fmt_time(first), "first_time_raw": first, "last_time": "—", "open_num": int(record.get("open_count") or 0),
         "sealed": None, "limit_price": record.get("limit_price"), "price": None, "change_pct": None,
         "turnover_rate": None, "circ_mv": None, "seal_amount": None, "seal_ratio": None, "reason": "",
-        "high_days": "", "limit_up_type": "", "theme": record.get("theme") or "", "theme_rank": None,
+        "high_days": "", "limit_up_type": "", "theme": theme, "theme_rank": None,
+        "theme_key": _hot_key_for([theme], hot, hot_index or {}),
         "theme_main": False, "novelty": "", "peers": 0, "peer_codes": [], "reasons": [],
-        "theme_source": "record" if record.get("theme") else "", "theme_hint": record.get("theme") or "", "lockable": False,
+        "theme_source": "record" if theme else "", "theme_hint": theme, "lockable": False,
         "notes": ["这一轮在涨停池和炸板池里都没看到这只（上游缺数据），名额照旧锁定"],
         "phase": record.get("phase") or (phase.get("kobe_label") if style == STYLE_KOBE else phase.get("chen_label")),
         "mode": MODE_FIRST_BOARD, "slot": record.get("slot"), "locked_at": None,
@@ -687,9 +1004,13 @@ def _allocate(
     max_picks: int,
     locked: Dict[str, Dict[str, Dict[str, Any]]],
     hot: Optional[List[Dict[str, Any]]] = None,
+    freeze: bool = False,
 ) -> Dict[str, Any]:
     """按题材名额分配：热度前 N 名的题材各 ``quota_top`` 个锁定名额，其余各 ``quota_other`` 个；
     同时不超过该派当前阶段的仓位上限。
+
+    **题材名额按派独立**：两派的门控、仓位、纪律都不一样，所以「机器人概念 4 个名额」是陈小群
+    4 个、科比 4 个，不是两派合起来 4 个。题材卡片上的数也必须分派显示（见 :func:`_theme_counts`）。
 
     **锁定 = 此刻还能买**：名额只发给「还没涨停、正在拉升、距涨停很近」的候选（`status=preboard`）。
     已经封板或炸板的票不再占名额——它们出现时已经买不进去了，只作为对照展示。
@@ -699,6 +1020,7 @@ def _allocate(
     排序按「距涨停越近越优先」，同距按量比。
     """
     lanes: Dict[str, Any] = {}
+    hot_index = _hot_index(hot)
     for style in STYLES:
         key = (phase.get("kobe_gate") if style == STYLE_KOBE else phase.get("chen_stage")) or ""
         cap = _cap(rules, style, key)
@@ -706,17 +1028,19 @@ def _allocate(
         present = {h["code"] for h in hits if h["style"] == style}
         for code, record in mine_locked.items():
             if code not in present:
-                hits.append(_hit_from_record(record, style, phase))
+                hits.append(_hit_from_record(record, style, phase, hot=hot, hot_index=hot_index))
         used = sum(int(r.get("position_pct") or 0) for r in mine_locked.values())
         taken = sorted(int(r["slot"]) for r in mine_locked.values() if r.get("slot"))
         count = len(mine_locked)
-        # 每个题材已锁定的数量（题材名先归一，避免「机器人」和「机器人概念」被当成两个）
-        quota_by_theme = {normalize_tag(t.get("name") or ""): int(t.get("quota") or 0) for t in (hot or [])}
-        rank_by_theme = {normalize_tag(t.get("name") or ""): int(t.get("rank") or 0) for t in (hot or [])}
-        display_by_theme = {normalize_tag(t.get("name") or ""): str(t.get("name") or "") for t in (hot or [])}
+        # 每个题材已锁定的数量。键一律是今日热点题材的 key（见 _hot_key_for），留档里存的是展示名，
+        # 所以这里要先映射回去，否则「机器人」和「机器人概念」会各占一份名额。
+        # 名额按派独立消耗：这个 dict 在 style 循环里，两派互不相通。
+        quota_by_theme = {str(t.get("key") or ""): int(t.get("quota") or 0) for t in (hot or [])}
+        rank_by_theme = {str(t.get("key") or ""): int(t.get("rank") or 0) for t in (hot or [])}
+        display_by_theme = {str(t.get("key") or ""): str(t.get("name") or "") for t in (hot or [])}
         theme_used: Dict[str, int] = {}
         for record in mine_locked.values():
-            name = normalize_tag(record.get("theme") or "")
+            name = _hot_key_for([record.get("theme") or ""], hot, hot_index)
             theme_used[name] = theme_used.get(name, 0) + 1
         last_locked = max((str(r.get("first_time") or "") for r in mine_locked.values()), default="")
         next_slot = (max(taken) if taken else count) + 1
@@ -736,6 +1060,12 @@ def _allocate(
                 continue
             if hit["action"] == ACTION_WATCH:
                 continue
+            if freeze:
+                # 盘中赚钱效应回落且没有题材在接力：停发新名额。已锁定的在上面原样保留，这里只拦新的。
+                hit["notes"].append("盘中赚钱效应回落且没有题材在接力，已停发新名额，只观察")
+                hit["action"] = ACTION_WATCH
+                hit["action_label"] = ACTION_LABELS[ACTION_WATCH]
+                continue
             if hit.get("status") != "preboard":
                 # 已经封板 / 炸板：出现时已经买不进去，不占名额，只作对照。
                 if hit["action"] in (ACTION_ACTIONABLE, ACTION_TRIAL):
@@ -746,14 +1076,15 @@ def _allocate(
             want = _position(style, hit["action"], rules)
             room = cap - used
             late = bool(last_locked) and hit["first_time_raw"] < last_locked
-            theme_name = normalize_tag(hit.get("theme") or "")
+            theme_name = str(hit.get("theme_key") or "")
             quota = quota_by_theme.get(theme_name, int((rules.get("preboard") or {}).get("quota_other", 2)))
             theme_rank = rank_by_theme.get(theme_name)
             if not theme_name or theme_used.get(theme_name, 0) >= quota:
                 hit["notes"].append(
                     (f"「{display_by_theme.get(theme_name, theme_name)}」今日热度第 {theme_rank} 名，"
-                     f"锁定名额 {quota} 个已满" if theme_name and theme_rank
-                     else f"「{display_by_theme.get(theme_name) or '无题材'}」不在今日热点里或名额已满")
+                     f"本派锁定名额 {quota} 个已满" if theme_name and theme_rank
+                     else f"「{display_by_theme.get(theme_name) or hit.get('theme') or '无题材'}」"
+                          "不在今日热点里或名额已满")
                     + "，只观察"
                 )
                 hit["action"] = ACTION_WATCH
@@ -767,6 +1098,13 @@ def _allocate(
                 hit["action"] = ACTION_WATCH
                 hit["action_label"] = ACTION_LABELS[ACTION_WATCH]
                 continue
+            if count >= max_picks:
+                # 科比「我一般是分四个票操作」：名额个数本身就是纪律，不能只靠仓位上限间接限制
+                # （主升期仓位上限 100%、单只 10%，不拦的话一天能发 10 个名额）。
+                hit["notes"].append(f"本派当天名额 {max_picks} 个已锁定用满（分四个票），只观察")
+                hit["action"] = ACTION_WATCH
+                hit["action_label"] = ACTION_LABELS[ACTION_WATCH]
+                continue
             hit["position_pct"] = min(want, room)
             used += hit["position_pct"]
             count += 1
@@ -776,8 +1114,9 @@ def _allocate(
             hit["theme_quota"] = quota
             hit["theme_rank"] = theme_rank
         lanes[style] = {
-            "themes": [{"name": t.get("name"), "rank": t.get("rank"), "quota": t.get("quota"),
-                        "used": theme_used.get(str(t.get("name") or ""), 0)} for t in (hot or [])],
+            "themes": [{"key": t.get("key"), "name": t.get("name"), "rank": t.get("rank"),
+                        "quota": t.get("quota"), "used": theme_used.get(str(t.get("key") or ""), 0)}
+                       for t in (hot or [])],
             "phase_key": key,
             "cap": cap,
             "used": used,
@@ -793,6 +1132,29 @@ def _valid_time(value: Any) -> bool:
     """首次封板时间是否有效（``HHMMSS``）。早期版本会把「—」写进来，一律视为无效。"""
     text = str(value or "").strip()
     return len(text) >= 4 and text.isdigit()
+
+
+def weak_codes(zt_rows: Iterable[Dict[str, Any]], broken_codes: Iterable[str], *, late: str) -> List[str]:
+    """昨日的弱票：炸板 + 涨停池里的烂板（盘中开过板）与尾盘板（末封 ≥ ``late``）。
+
+    弱转强要求前一日是「分歧 / 烂板 / 核按钮」（陈小群原文），科比也把尾盘偷鸡板算弱板（#33）。
+    昨日**干净涨停**的票今天再被买上去是二板 / 强转强，不是弱转强，不能混进来。
+
+    口径与盘后 M2 一致（炸板回封 / 末封 ≥14:30）。开过板优先看 ``open_num``（上游池接口给）；
+    库里的留档没有这一列，退化为「末封时间晚于首封时间」——实测与 ``open_num`` 完全一致。
+    """
+    weak = {str(code) for code in (broken_codes or ()) if code}
+    for row in zt_rows or []:
+        code = str(row.get("code") or "")
+        if not code:
+            continue
+        first, last = str(row.get("first_time") or ""), str(row.get("last_time") or "")
+        opened = int(row.get("open_num") or 0) >= 1 or (
+            _valid_time(first) and _valid_time(last) and last > first
+        )
+        if opened or (_valid_time(last) and last >= str(late)):
+            weak.add(code)
+    return sorted(weak)
 
 
 def locked_from_records(records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
@@ -914,11 +1276,12 @@ class LiveRadarService:
                 for name in str(row.main_themes or "").split("、"):
                     if name.strip() and name.strip() not in recent:
                         recent.append(name.strip())
-            yesterday = {r["code"] for r in self.repository.pool_rows(prev, "zt")}
+            yesterday_rows = list(self.repository.pool_rows(prev, "zt"))
+            yesterday = {r["code"] for r in yesterday_rows}
             yesterday_broken = {r["code"] for r in self.repository.pool_rows(prev, "zb")}
         except Exception as exc:
             logger.warning("打板王雷达：读取近期主线 / 昨日涨停失败 %s", exc)
-            yesterday, yesterday_broken = set(), set()
+            yesterday, yesterday_rows, yesterday_broken = set(), [], set()
         return {
             "available": True,
             "source": "review",
@@ -930,6 +1293,13 @@ class LiveRadarService:
             "recent_mains": recent,
             "yesterday_codes": sorted(yesterday),
             "yesterday_broken": sorted(yesterday_broken),
+            "yesterday_weak": weak_codes(yesterday_rows, yesterday_broken,
+                                         late=str(self.rules.get("weak_late_time", "143000"))),
+            # 门控的具体原因：前一交易日的指标、六阶段条件核对、科比的连续杀跌天数。
+            # 与盘后复盘同一份结构（``metrics`` / ``stage`` / ``kobe_stage``），页面可以直接复用同一套渲染。
+            "metrics": payload.get("metrics") or {},
+            "stage": stage,
+            "kobe_stage": kobe,
         }
 
     def _compute_previous_context(self, prev: str) -> Dict[str, Any]:
@@ -1009,6 +1379,12 @@ class LiveRadarService:
                 "recent_mains": recent,
                 "yesterday_codes": sorted(r["code"] for r in _rows(prev, "zt")),
                 "yesterday_broken": sorted(r["code"] for r in _rows(prev, "zb")),
+                "yesterday_weak": weak_codes(_rows(prev, "zt"),
+                                             [r["code"] for r in _rows(prev, "zb")],
+                                             late=str(self.rules.get("weak_late_time", "143000"))),
+                "metrics": metrics[prev],
+                "stage": stage,
+                "kobe_stage": kobe,
             }
         except Exception as exc:
             logger.warning("打板王雷达：现算 %s 的周期失败 %s", prev, exc)
@@ -1017,6 +1393,129 @@ class LiveRadarService:
                 "trade_date": prev,
                 "reason": f"无法判定 {prev} 的情绪周期（{type(exc).__name__}）；可先生成一次盘后复盘",
             }
+
+    def _changes(self, kinds: Tuple[str, ...], *, timeout: float,
+                 reuse_sec: float) -> Tuple[Dict[str, List[Dict[str, Any]]], List[str]]:
+        """拉升异动（东财盘口异动）。返回 ``({异动类型: 事件列表}, 降级说明列表)``。
+
+        东财 push2ex 在 09:30 开盘那几分钟会读超时或直接断连（实测 2026-10-23 09:30–09:32 连续多轮：
+        ``Read timed out`` 与 ``RemoteDisconnected`` 各半）。三件事要分开处理：
+
+        - **超时要短**：雷达 10 秒一轮，这一路用 15 秒预算 × 2 次重试能把一轮拖到 30 秒以上；
+        - **两类并发、共用预算**：一路慢不该让另一路排队等；
+        - **失败要能沿用**：候选本来只看「最近 10 分钟的异动」，复用一份 ``reuse_sec`` 秒内的事件流
+          不改变语义，但能让一轮取数失败不至于把候选清空。
+        """
+        from data_provider import limit_up_fetcher as lu
+
+        from src.services.daban.fetchers import run_parallel
+
+        results = run_parallel(
+            {kind: (lambda k=kind: lu.fetch_em_changes(k, timeout=timeout)) for kind in kinds},
+            timeout=timeout + 1, workers=len(kinds) or 1,
+        )
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        notes: List[str] = []
+        for kind in kinds:
+            events, err = results.get(kind) or (None, "未执行")
+            if events is not None:
+                _CHANGE_CACHE[kind] = (time.time(), list(events))
+                out[kind] = list(events)
+                continue
+            cached = _CHANGE_CACHE.get(kind)
+            age = (time.time() - cached[0]) if cached else None
+            if cached and age is not None and age < reuse_sec:
+                out[kind] = list(cached[1])
+                notes.append(f"拉升异动（{kind}）取数失败，沿用 {int(age)} 秒前的一份：{str(err)[:60]}")
+            else:
+                out[kind] = []
+                notes.append(f"拉升异动（{kind}）不可用，这一路的未涨停候选为空：{str(err)[:60]}")
+        return out, notes
+
+    def _realtime_gate(self, pool_date: str, *, rows, broken, phase, now: str, payload) -> Dict[str, Any]:
+        """组装实时门控需要的输入，交给 :func:`decide_realtime_gate` 判。失败一律按「不活跃」降级。"""
+        cfg = self.rules.get("realtime_gate") or {}
+        if not cfg.get("enabled", True):
+            return {"enabled": False, "active": False, "upgraded": False, "frozen": False, "reason": "",
+                    "keys": {STYLE_CHEN: str(phase.get("chen_stage") or ""),
+                             STYLE_KOBE: str(phase.get("kobe_gate") or "")}}
+        from src.services.daban import cycle as cycle_mod
+        from src.services.daban.themes import build_themes
+
+        timeout = float(getattr(self.config, "daban_fetch_timeout_sec", 15) or 15)
+        extra = self._cycle_inputs(pool_date, timeout=timeout)
+        for note in extra.get("notes") or []:
+            if note not in payload["degraded_reasons"]:
+                payload["degraded_reasons"].append(note)
+        metrics = cycle_mod.compute_metrics(
+            zt=rows, zb=broken, dt=extra.get("dt") or [], previous=extra.get("previous"), rules=self.rules,
+        )
+        day_themes = build_themes(zt=rows, blocks=[], history=[], previous=None, yesterday_rows=[],
+                                  recent_mains=[], hot_rank={}, rules=self.rules)["themes"]
+        metrics["follow_rate"] = round(day_themes[0]["zt_count"] / len(rows), 4) if day_themes and rows else None
+        # 「较昨日」的几条判定（晋级率上升、连板高度回落、大面增多）要有 delta 才算得出来。
+        cycle_mod.attach_deltas(metrics, phase.get("metrics") or None)
+        today = realtime_phase(metrics=metrics, prev_stage=(phase.get("stage") or {}).get("key"),
+                               history=self.stage_history(pool_date), rules=self.rules)
+        # 轮动豁免要的是「通过热点三道门槛的题材在加速」，所以这里按同一套 cfg 现算一份热点名单。
+        hot_now = _hot_themes(blocks=self.blocks(), themes=[], cfg=(self.rules.get("preboard") or {}),
+                              market_size=max(1, len(rows) + len(broken)),
+                              prev_blocks=self.previous_block_counts(pool_date), news_lookup=self.theme_news)
+        accel = _theme_accelerating(rows, hot_now, now=now,
+                                    window_min=int(cfg.get("theme_accel_window_min", 15)),
+                                    min_new=int(cfg.get("theme_accel_min", 2)))
+        decision = decide_realtime_gate(
+            rules=self.rules, phase=phase, metrics=metrics, today=today, now=now,
+            accel_theme=accel, state=_RT_STATE.setdefault(pool_date, {}),
+        )
+        decision["metrics"] = {key: metrics.get(key) for key in (
+            "zt_count", "zb_count", "dt_count", "lianban_count", "max_height",
+            "promotion_rate", "yzt_premium", "zab_rate", "follow_rate")}
+        return decision
+
+    def _cycle_inputs(self, pool_date: str, *, timeout: float) -> Dict[str, Any]:
+        """实时周期要补的两路数据：当日跌停池、昨日涨停票今日表现（赚钱效应）。
+
+        两路并发、共用预算、缓存 30 秒——它们变化比涨停池慢，没必要跟着 10 秒轮询跑。
+        """
+        cached = _CYCLE_CACHE.get(pool_date)
+        if cached and (time.time() - cached[0]) < 30:
+            return cached[1]
+        from src.services.daban.fetchers import fetch_em, fetch_limit_pool, run_parallel
+
+        budget = min(timeout, 6.0)
+        results = run_parallel(
+            {
+                "dt": lambda: fetch_limit_pool("dt", pool_date, timeout=budget, include_bse=False),
+                "previous": lambda: fetch_em("previous", pool_date, timeout=budget, include_bse=False),
+            },
+            timeout=budget + 1, workers=2,
+        )
+        out: Dict[str, Any] = {"dt": [], "previous": None, "notes": []}
+        for key in ("dt", "previous"):
+            env, err = results.get(key) or (None, "未执行")
+            rows = ((env or {}).get("value") or {}).get("rows") if (env or {}).get("ok") else None
+            if rows is None:
+                label = "跌停池" if key == "dt" else "昨日涨停今日表现"
+                out["notes"].append(f"{label}不可用（实时周期的这一项按缺失处理）：{str(err)[:50]}")
+                continue
+            out[key] = rows
+        _CYCLE_CACHE[pool_date] = (time.time(), out)
+        return out
+
+    def stage_history(self, before: str) -> List[Dict[str, Any]]:
+        """此前交易日的阶段与昨日涨停溢价摘要，按时间正序——科比要靠它数「连续杀跌第几天」。"""
+        cached = _HISTORY_CACHE.get(before)
+        if cached and (time.time() - cached[0]) < 600:
+            return cached[1]
+        try:
+            rows = self.repository.history(limit=10, before=before)
+        except Exception as exc:
+            logger.warning("打板王雷达：读取阶段历史失败 %s", exc)
+            return []
+        out = [{"stage": row.stage, "yzt_premium": row.yzt_premium} for row in reversed(rows) if row.stage]
+        _HISTORY_CACHE[before] = (time.time(), out)
+        return out
 
     def blocks(self) -> List[Dict[str, Any]]:
         """当日涨停题材榜（同花顺 block_top）。盘中每轮都用，缓存 20 秒；失败返回空，不阻断快照。
@@ -1226,17 +1725,23 @@ class LiveRadarService:
         # 未涨停候选：东财「火箭发射 / 快速反弹」异动 → 腾讯快照。没有它就只剩事后报告已封板的票。
         preboard_rows: List[Dict[str, Any]] = []
         if (self.rules.get("preboard") or {}).get("enabled", True):
+            cfg = self.rules.get("preboard") or {}
+            window = int(cfg.get("window_min", 10))
+            now_min = int(now[:2]) * 60 + int(now[2:4])
+            rise_events: Dict[str, Dict[str, Any]] = {}
+            feeds, notes = self._changes(
+                ("rise", "rebound"),
+                timeout=min(timeout, float(cfg.get("fetch_timeout_sec", 4) or 4)),
+                reuse_sec=float(cfg.get("reuse_sec", 90) or 0),
+            )
+            payload["degraded_reasons"].extend(notes)
+            for kind in ("rise", "rebound"):
+                for event in feeds.get(kind) or []:
+                    hh, mm = int(event["time"][:2] or 0), int(event["time"][2:4] or 0)
+                    if event["code"] in rise_events or (now_min - (hh * 60 + mm)) > window:
+                        continue
+                    rise_events[event["code"]] = event
             try:
-                cfg = self.rules.get("preboard") or {}
-                window = int(cfg.get("window_min", 10))
-                now_min = int(now[:2]) * 60 + int(now[2:4])
-                rise_events: Dict[str, Dict[str, Any]] = {}
-                for kind in ("rise", "rebound"):
-                    for event in lu.fetch_em_changes(kind, timeout=timeout):
-                        hh, mm = int(event["time"][:2] or 0), int(event["time"][2:4] or 0)
-                        if event["code"] in rise_events or (now_min - (hh * 60 + mm)) > window:
-                            continue
-                        rise_events[event["code"]] = event
                 if rise_events:
                     snap = lu.fetch_tencent_quotes(list(rise_events), timeout=timeout)
                     for code, quote in snap.items():
@@ -1251,7 +1756,7 @@ class LiveRadarService:
                             "turnover_rate": quote.get("turnover_rate"), "time": event.get("time") or "",
                         })
             except Exception as exc:
-                payload["degraded_reasons"].append(f"拉升异动不可用（未涨停候选为空）：{str(exc)[:60]}")
+                payload["degraded_reasons"].append(f"候选盘口快照不可用（未涨停候选为空）：{str(exc)[:60]}")
 
         phase = self.previous_context(pool_date)
         payload["previous"] = {k: v for k, v in phase.items() if k not in ("yesterday_codes",)}
@@ -1267,6 +1772,21 @@ class LiveRadarService:
             _CACHE["live"] = (time.time(), payload)
             return payload
 
+        # 盘中实时门控：前一交易日的周期只做底线，今天的 tape 给出市场验证后按今天的周期行事。
+        # 必须在 build_hits 之前决定，因为它改的就是喂给 build_hits 的门控键。
+        rt = {"enabled": False, "active": False, "upgraded": False, "frozen": False, "reason": ""}
+        if not payload["replay"]:
+            try:
+                rt = self._realtime_gate(pool_date, rows=rows, broken=broken, phase=phase, now=now, payload=payload)
+            except Exception as exc:
+                logger.warning("打板王雷达：实时门控判定失败，按前一交易日的周期门控 %s", exc)
+                payload["degraded_reasons"].append(f"实时门控不可用，按前一交易日的周期门控：{str(exc)[:60]}")
+            if rt.get("enabled") and rt.get("keys"):
+                phase = {**phase, "chen_stage": rt["keys"][STYLE_CHEN], "kobe_gate": rt["keys"][STYLE_KOBE],
+                         "chen_label": (rt.get("labels") or {}).get(STYLE_CHEN) or phase.get("chen_label"),
+                         "kobe_label": (rt.get("labels") or {}).get(STYLE_KOBE) or phase.get("kobe_label")}
+        payload["realtime_gate"] = rt
+
         # 集合竞价（09:15–09:30）期间的封单可以撤、涨停原因也没有，不占名额；09:30 后才开始锁定。
         recording = trading and not payload["replay"] and now >= "093000"
         # 读已锁定名额 → 分配剩余名额 → 留档，必须是一个原子步骤：页面轮询和后台任务可能同时跑，
@@ -1281,7 +1801,8 @@ class LiveRadarService:
                 prev_blocks=self.previous_block_counts(pool_date) if not payload["replay"] else {},
                 news_lookup=self.theme_news if not payload["replay"] else None,
                 concepts_lookup=self.stock_concepts if not payload["replay"] else None,
-                yesterday_weak=set(phase.get("yesterday_broken") or ()) | set(phase.get("yesterday_codes") or ()),
+                yesterday_weak=set(phase.get("yesterday_weak") or ()),
+                freeze=bool(rt.get("frozen")),
             )
             fresh = self._record(pool_date, built["hits"]) if recording else []
             if recording:
@@ -1305,6 +1826,8 @@ class LiveRadarService:
                                     else None),
                 "source": phase.get("source"),
                 "trade_date": phase.get("trade_date"),
+                "chen_reason": _phase_reason(STYLE_CHEN, phase, self.rules),
+                "kobe_reason": _phase_reason(STYLE_KOBE, phase, self.rules),
             },
         })
         if fresh:
@@ -1519,6 +2042,10 @@ def build_live_background_tasks(config, *, config_provider) -> List[Dict[str, An
 def clear_cache() -> None:
     _CACHE.clear()
     _BLOCK_CACHE.clear()
+    _CHANGE_CACHE.clear()
+    _CYCLE_CACHE.clear()
+    _HISTORY_CACHE.clear()
+    _RT_STATE.clear()
     _PREV_BLOCK_CACHE.clear()
     _NEWS_CACHE.clear()
     _NEWS_INFLIGHT.clear()
@@ -1533,5 +2060,5 @@ __all__ = [
     "LIVE_TASK_NAME", "LIVE_TASK_SECONDS", "LiveRadarService", "build_hits", "build_live_background_tasks",
     "clear_cache", "filter_reasons", "is_trading_day", "limit_price_of", "live_hit_record", "locked_from_records",
     "market_open_now",
-    "render_hit_alert", "review_pending_live_hits",
+    "render_hit_alert", "review_pending_live_hits", "weak_codes",
 ]

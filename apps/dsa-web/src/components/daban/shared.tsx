@@ -1,10 +1,17 @@
 import type React from 'react';
-import { CandlestickChart } from 'lucide-react';
+import { CandlestickChart, Check, Minus, X } from 'lucide-react';
 import { Tooltip } from '../common';
 import { resolveStockChartCode, useStockChartStore } from '../../stores/stockChartStore';
 import type { DabanCited, DabanPrinciple } from '../../types/daban';
 import { cn } from '../../utils/cn';
 import { principleLabel } from './format';
+
+/** 条件核对的命中标记：命中 / 未命中 / 数据缺失。周期仪表与盘中雷达的门控卡共用。 */
+export const HitIcon: React.FC<{ hit: boolean | null }> = ({ hit }) => {
+  if (hit === true) return <Check className="h-3.5 w-3.5 text-danger" aria-label="命中" />;
+  if (hit === false) return <X className="h-3.5 w-3.5 text-muted-text" aria-label="未命中" />;
+  return <Minus className="h-3.5 w-3.5 text-muted-text" aria-label="数据缺失" />;
+};
 
 /** 代码 + 名称，点击打开全局行情 / K 线弹窗（与行业资金候选股同一写法）。 */
 export const StockLink: React.FC<{ code: string; name: string; className?: string }> = ({ code, name, className }) => {

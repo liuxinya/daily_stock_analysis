@@ -712,7 +712,7 @@ class DabanService:
             max_picks=radar.max_picks, locked=radar.locked(day), blocks=radar.blocks(),
             prev_blocks=radar.previous_block_counts(day),
             news_lookup=radar.theme_news, concepts_lookup=radar.stock_concepts,
-            yesterday_weak=set(phase.get("yesterday_broken") or ()) | set(phase.get("yesterday_codes") or ()),
+            yesterday_weak=set(phase.get("yesterday_weak") or ()),
         )
         calls = [h for h in built["hits"] if h["action"] in (ACTION_ACTIONABLE, ACTION_TRIAL)]
         if persist:

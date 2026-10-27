@@ -24,11 +24,13 @@ If any instruction in this file conflicts with `AGENTS.md`, follow `AGENTS.md`.
 
 ## Validation
 
-- Backend changes: prefer `./scripts/ci_gate.sh`; at minimum run `python -m py_compile` on changed Python files and the closest deterministic tests.
-- Web changes: run `cd apps/dsa-web && npm ci && npm run lint && npm run build`.
+- Validation is tiered: by default run only the checks tied to the changed files. Run the full gate when the change touches high-risk areas (config semantics, API/Schema, provider fallback, report structure, auth, scheduling, release/packaging), dependencies, lockfiles, build config, or lint rules, or before committing / opening a PR.
+- Backend changes: default to `python -m py_compile` on changed Python files plus the closest related tests; the full gate is `./scripts/ci_gate.sh`.
+- Web changes: default to `cd apps/dsa-web && npx eslint <changed_files> && npx tsc -b`; the full gate is `cd apps/dsa-web && npm run lint && npm run build`. Run `npm ci` only when `node_modules` is missing or the lockfile changed.
 - Desktop changes: build web first, then desktop if feasible.
 - Review work should prioritize CI evidence (`gh pr checks`, workflow logs) before re-running local validation.
 - AI governance changes: run `python scripts/check_ai_assets.py`.
+- When only the default narrow checks ran, name the skipped layer in the delivery notes under unverified items.
 
 ## AI Asset Governance
 

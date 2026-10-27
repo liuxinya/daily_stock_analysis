@@ -82,8 +82,8 @@ gh run view <run_id> --log-failed
 
 如果必须补本地验证，按改动面选择最接近的检查，例如：
 
-- 后端：`./scripts/ci_gate.sh` 或 `python -m py_compile <changed_python_files>`
-- 前端：`cd apps/dsa-web && npm ci && npm run lint && npm run build`
+- 后端：`python -m py_compile <changed_python_files>` 或相关测试文件；需要全量时才跑 `./scripts/ci_gate.sh`
+- 前端：`cd apps/dsa-web && npx eslint <changed_files> && npx tsc -b`；需要全量时才跑 `npm run lint && npm run build`
 - 桌面端：先构建 Web，再构建 Electron
 
 ### Step 5: 评估正确性与风险

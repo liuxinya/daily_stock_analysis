@@ -21,6 +21,7 @@ canonical_code,name_zh,aliases,popularity
 158030.SZ,航空航天ETF汇添富,,90
 158031.SZ,创业板人工智能ETF易方达,,90
 158032.SZ,化工ETF景顺,,90
+158036.SZ,卫星ETF华夏,,90
 158037.SZ,机器人ETF博时,,90
 158038.SZ,粮食ETF富国,,90
 158039.SZ,港股通红利低波ETF广发,,90
@@ -43,6 +44,7 @@ canonical_code,name_zh,aliases,popularity
 158061.SZ,创业板算力ETF天弘,,90
 158062.SZ,创业板金融科技ETF建信,,90
 158063.SZ,创业板算力ETF南方,,90
+158066.SZ,大数据ETF前海开源,,90
 158067.SZ,创业板金融科技ETF万家,,90
 158072.SZ,创业板软件ETF南方,,90
 159001.SZ,货币ETF易方达,,90
@@ -84,6 +86,7 @@ canonical_code,name_zh,aliases,popularity
 159043.SZ,食品ETF华安,,90
 159045.SZ,稀有金属ETF大成,,90
 159046.SZ,绿电ETF天弘,,90
+159047.SZ,港股信息技术ETF银华,,90
 159048.SZ,机器人ETF大成,,90
 159049.SZ,有色ETF工银,,90
 159050.SZ,机器人ETF广发,,90
@@ -118,6 +121,7 @@ canonical_code,name_zh,aliases,popularity
 159085.SZ,价值ETF永赢,,90
 159086.SZ,金融科技ETF广发,,90
 159087.SZ,化工ETF万家,,90
+159089.SZ,港股通互联网ETF国联,,90
 159091.SZ,港股通金融ETF易方达,,90
 159093.SZ,化工ETF汇添富,,90
 159095.SZ,云计算ETF银华,,90
@@ -893,7 +897,6 @@ canonical_code,name_zh,aliases,popularity
 512360.SH,MSCIA股ETF平安,,90
 512370.SH,A500增强ETF华夏,,90
 512380.SH,MSCI中国ETF银华,,90
-512390.SH,中国低波ETF平安,,90
 512400.SH,有色金属ETF南方,,90
 512410.SH,银行ETF广发,,90
 512420.SH,工程机械ETF华安,,90
@@ -1522,7 +1525,7 @@ canonical_code,name_zh,aliases,popularity
 563350.SH,A50ETF华泰柏瑞,,90
 563360.SH,A500ETF华泰柏瑞,,90
 563380.SH,航空航天ETF华泰柏瑞,,90
-563390.SH,全指现金流ETF华泰柏瑞,,90
+563390.SH,现金流ETF华泰柏瑞,,90
 563500.SH,A500ETF华宝,,90
 563510.SH,A500红利低波ETF易方达,,90
 563520.SH,沪深300ETF永赢,,90

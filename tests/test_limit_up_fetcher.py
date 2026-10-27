@@ -103,9 +103,26 @@ class TestThsPool:
         assert result["trade_status"] == "closed"
 
     def test_truncated_body_is_an_upstream_error_not_an_empty_pool(self, monkeypatch):
+        monkeypatch.setattr(lu.time, "sleep", lambda _s: None)
         monkeypatch.setattr(lu.requests, "get", lambda *a, **k: _Resp(broken=True))
         with pytest.raises(lu.LimitUpUpstreamError):
             lu.fetch_ths_pool("zt", "2026-10-19")
+
+    def test_retries_wait_between_attempts(self, monkeypatch):
+        """开盘那几分钟东财会直接断连：两次请求挤在同一秒里等于只试了一次，必须退避。"""
+        slept, calls = [], []
+        monkeypatch.setattr(lu.time, "sleep", lambda s: slept.append(s))
+
+        def boom(*a, **k):
+            calls.append(1)
+            raise lu.requests.ConnectionError("Connection aborted")
+
+        monkeypatch.setattr(lu.requests, "get", boom)
+        with pytest.raises(lu.LimitUpUpstreamError):
+            lu.fetch_em_changes("rise", timeout=1)
+        assert len(calls) == lu._MAX_ATTEMPTS
+        assert len(slept) == lu._MAX_ATTEMPTS - 1
+        assert all(s >= lu._RETRY_BACKOFF_SEC for s in slept)
 
     def test_nonzero_status_code_raises(self, monkeypatch):
         monkeypatch.setattr(lu.requests, "get", lambda *a, **k: _Resp({"status_code": -1, "status_msg": "bad"}))

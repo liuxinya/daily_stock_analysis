@@ -22,7 +22,9 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -68,6 +70,8 @@ EM_POOLS = {
 
 _DEFAULT_TIMEOUT = 12.0
 _MAX_ATTEMPTS = 2
+_RETRY_BACKOFF_SEC = 0.4    # 第 n 次失败后等 0.4×n 秒再试
+_RETRY_JITTER_SEC = 0.25
 _BEIJING = timezone(timedelta(hours=8))
 _HIGH_DAYS_RE = re.compile(r"(\d+)\s*天\s*(\d+)\s*板")
 
@@ -165,7 +169,11 @@ def _num(value: Any) -> Optional[float]:
 
 
 def _get_json(url: str, params: Dict[str, Any], *, timeout: Optional[float]) -> Dict[str, Any]:
-    """GET 一个 JSON；5xx、截断 body、非 JSON 都重试一次，最后一次失败如实抛出。"""
+    """GET 一个 JSON；5xx、截断 body、非 JSON 都重试一次，最后一次失败如实抛出。
+
+    重试之间要退避：上游（东财 push2ex 尤其明显）在 09:30 开盘那几分钟会直接断连，
+    两次请求挤在同一秒里等于只试了一次。退避带抖动，避免并发取数的几路在同一刻一起重试。
+    """
     last_error: Optional[Exception] = None
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
@@ -185,7 +193,10 @@ def _get_json(url: str, params: Dict[str, Any], *, timeout: Optional[float]) -> 
             return payload
         except (LimitUpUpstreamError, requests.RequestException) as exc:
             last_error = exc
-            logger.debug("[涨停数据] 第 %s/%s 次请求失败: %s", attempt, _MAX_ATTEMPTS, exc)
+            # 带上 url：只看异常文本分不清是哪一路上游（断连类异常里没有主机名）。
+            logger.debug("[涨停数据] %s 第 %s/%s 次请求失败: %s", url, attempt, _MAX_ATTEMPTS, exc)
+            if attempt < _MAX_ATTEMPTS:
+                time.sleep(_RETRY_BACKOFF_SEC * attempt + random.uniform(0, _RETRY_JITTER_SEC))
     raise LimitUpUpstreamError(f"上游请求失败（已重试 {_MAX_ATTEMPTS} 次）: {last_error}")
 
 

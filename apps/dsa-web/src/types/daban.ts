@@ -396,6 +396,11 @@ export type DabanLiveHit = {
   highDays: string;
   limitUpType: string;
   theme: string;
+  /**
+   * 该票归属的今日热点题材 key（`hotThemes[].key`），空串 = 贴不上任何热点题材。
+   * `theme` 是展示名，两套口径的写法不一样（「机器人」vs「机器人概念」），筛选只能用这个。
+   */
+  themeKey: string;
   themeRank: number | null;
   themeMain: boolean;
   novelty: string;
@@ -418,9 +423,13 @@ export type DabanHotTheme = {
   days: number;
   share: number;
   newsCount: number | null;
+  /** 两派合计的未锁定候选数 / 已锁定名额数；分派的数在 `byStyle` 里 */
   candidates: number;
+  /** 单派的题材名额上限（两派各自有这么多，不是合起来） */
   quota: number;
   used: number;
+  /** 每派各自的「已锁定名额」与「未锁定候选」。候选与页面「未锁定潜力股」同源同判据。 */
+  byStyle?: Partial<Record<DabanStyle, { used: number; candidates: number }>>;
   novelty?: string;
   rank?: number | null;
 };
@@ -459,6 +468,10 @@ export type DabanLive = {
     kobeLabel?: string;
     reason?: string;
     mainThemes?: { name: string; rank: number; novelty: string }[];
+    /** 门控依据：前一交易日的指标与六阶段条件核对，与盘后复盘同一份结构 */
+    metrics?: DabanMetrics;
+    stage?: DabanStage;
+    kobeStage?: DabanKobeStage;
   };
   gateLabels: {
     kobe?: string;
@@ -469,6 +482,31 @@ export type DabanLive = {
     chenW2sAction?: string | null;
     source?: 'review' | 'computed';
     tradeDate?: string;
+    /** 该派当前阶段「为什么能做 / 为什么不做」的原话与出处 */
+    chenReason?: { text: string; principleIds: string[] };
+    kobeReason?: { text: string; principleIds: string[] };
+  };
+  /** 盘中实时门控：前一交易日只做底线，今天的 tape 给出市场验证后按今天的周期行事 */
+  realtimeGate?: {
+    enabled?: boolean;
+    /** 当日涨停数够样本量、已开始实时重判 */
+    active?: boolean;
+    /** 已按今天的周期放宽门控 */
+    upgraded?: boolean;
+    /** 赚钱效应回落且无题材接力，已停发新名额 */
+    frozen?: boolean;
+    reason?: string;
+    /** 仍在加速封板的热点题材（轮动豁免的依据） */
+    accelTheme?: string | null;
+    todayLabel?: string | null;
+    todayKobeLabel?: string | null;
+    metrics?: {
+      ztCount?: number | null;
+      dtCount?: number | null;
+      zbCount?: number | null;
+      yztPremium?: number | null;
+      zabRate?: number | null;
+    };
   };
   stats: { limitUp?: number; firstBoards?: number; firstTouches?: number; broken?: number; actionable?: number; trial?: number };
   hits: DabanLiveHit[];

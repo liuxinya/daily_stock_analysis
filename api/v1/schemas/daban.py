@@ -135,6 +135,7 @@ class DabanLiveHit(BaseModel):
     high_days: str = ""
     limit_up_type: str = ""
     theme: str = ""
+    theme_key: str = ""
     theme_rank: Optional[int] = None
     theme_main: bool = False
     novelty: str = ""
@@ -160,6 +161,7 @@ class DabanLiveResponse(BaseModel):
     duration_ms: int = 0
     previous: Dict[str, Any] = Field(default_factory=dict)
     gate_labels: Dict[str, Any] = Field(default_factory=dict)
+    realtime_gate: Dict[str, Any] = Field(default_factory=dict)
     stats: Dict[str, Any] = Field(default_factory=dict)
     hits: List[DabanLiveHit] = Field(default_factory=list)
     blocked: List[Dict[str, Any]] = Field(default_factory=list)

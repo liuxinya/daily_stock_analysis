@@ -197,22 +197,37 @@ DEFAULT_RULES: Dict[str, Any] = {
     # 「第一天杀跌是很恐怖的」，不做。陈小群线只有回暖期「聚焦新题材首板/二板」，其余阶段只观察或空仓。
     "live_gates": {
         "kobe": {"low_shock": "trial", "main_rise": "trial", "high_shock": "trial",
-                 "fall_1": None, "fall_2": "actionable", "fall_3": "trial"},
+                 "fall_1": None, "fall_2": "actionable", "fall_2_early": "trial", "fall_3": "trial"},
         "chen": {"ice": "watch", "warm": "trial", "ferment": "watch", "climax": "watch",
                  "diverge": None, "retreat": None},
     },
     # 盘中雷达每派、每阶段的总仓位上限（%）。原文只有陈小群的阶段仓位与科比「分四个票」「轻仓」，
     # 科比各阶段的具体数字是系统参数（低位试错 20、主升分四票、高位轻仓 30、主跌第二天之后一个满额名额），可覆盖。
     "live_caps": {
-        "kobe": {"low_shock": 20, "main_rise": 100, "high_shock": 30, "fall_1": 0, "fall_2": 25, "fall_3": 20},
+        "kobe": {"low_shock": 20, "main_rise": 100, "high_shock": 30, "fall_1": 0, "fall_2": 25,
+                 "fall_2_early": 25, "fall_3": 20},
         # 陈小群线：回暖期「聚焦新题材首板/二板」；发酵期「围绕龙头或换手龙介入，分歧转一致时加仓」，
         # 弱转强正是原文最核心的模式，所以发酵期也给仓位。高潮期只锁龙头、分歧期只卖、退潮空仓。
         "chen": {"ice": 0, "warm": 20, "ferment": 20, "climax": 0, "diverge": 0, "retreat": 0},
+    },
+    # 盘中实时门控：前一交易日的周期只做底线，盘中拿到市场验证后按今天的周期行事。
+    # 陈小群「市场永远是对的，预判必须得到市场验证才执行交易」；科比「一旦打脸了，就要修正自己的观点」。
+    "realtime_gate": {
+        "enabled": True,
+        "min_zt_sample": 20,            # 样本量门槛：当日涨停数到这个量级才开始实时重判（09:35 只有几只时比什么都不可靠）
+        "confirm_rounds": 2,            # 升级 / 降级都要连续 N 轮满足才生效，避免一轮噪声来回翻
+        "zab_rate_max": 0.35,           # 升级要求封板质量：炸板率高于此值不算赚钱效应恢复
+        "peak_drawdown": 0.3,           # 降级信号之一：涨停数从当日峰值回落比例
+        "theme_accel_window_min": 15,   # 轮动豁免窗口：最近 N 分钟
+        "theme_accel_min": 2,           # 该窗口内某个热点题材新增封板 ≥N 只 = 资金在换题材而不是在撤
+        "fall2_late_time": "140000",    # 科比「主跌第二天……尾盘就可以找买点」：第 2 天的可执行只在尾盘放行
     },
     # 未涨停候选（涨速快、还没封板）：目的是让人买得进，而不是事后报告已封板的票。
     "preboard": {
         "enabled": True,
         "window_min": 10,          # 只看最近 N 分钟内的拉升异动
+        "fetch_timeout_sec": 4,    # 异动取数单独的超时：雷达 10 秒一轮，不能让它占满 15 秒的总预算
+        "reuse_sec": 90,           # 异动取数失败时，沿用最近一次成功结果的时间窗（候选本身只看 10 分钟内的异动）
         "gap_max": 6.0,            # 距涨停价最多几个百分点（再远就赶不上）
         "min_change": 3.0,         # 当日涨幅下限
         "max_per_style": 20,       # 每派候选上限（真正的名额由题材热度配额决定）

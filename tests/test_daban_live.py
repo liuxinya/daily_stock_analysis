@@ -108,14 +108,30 @@ class TestAllocation:
                    if h["style"] == "kobe" and not h["slot"])
 
     def test_max_four_picks(self):
-        rows = [_pre(f"6000{i:02d}", f"股{i}", 0.5 + i / 10) for i in range(1, 8)]
-        result = _preboard_run(rows, phase=PHASE_RISE)      # 主升：仓位 100%，名额 4 个
+        """「我一般是分四个票操作」（科比 #21）：名额总数本身就是纪律，不靠仓位上限间接限制。
+
+        两个题材各有 4 个配额、主升期仓位上限 100%（单只 10%），两道约束都不拦；只有名额总数拦得住。
+        """
+        cfg = rules()
+        blocks = [{"name": "机器人概念", "limit_up_num": 9, "days": 3, "members": []},
+                  {"name": "人工智能", "limit_up_num": 7, "days": 3, "members": []}]
+        rows, mem = [], {}
+        for idx, theme in enumerate(["机器人", "人工智能"]):
+            for k in range(1, 5):
+                code = f"60{idx}{k:03d}"
+                rows.append(_pre(code, f"{theme}{k}", 0.5 + k / 10))
+                mem[code] = {theme}
+        result = live.build_hits(rows=[], broken=[], phase=PHASE_RISE, rules=cfg, memory=mem,
+                                 preboard=rows, blocks=blocks, max_picks=4,
+                                 news_lookup=lambda names: {n: 9 for n in names})
         funded = [h for h in result["hits"] if h["style"] == "kobe" and h["slot"]]
         assert sorted(h["slot"] for h in funded) == [1, 2, 3, 4]
         assert result["lanes"]["kobe"]["picks"] == 4
+        assert any("名额 4 个已锁定用满" in " ".join(h["notes"]) for h in result["hits"]
+                   if h["style"] == "kobe" and not h["slot"])
 
     def test_theme_quota_top_three_get_four_others_two(self):
-        """热度排名前三的题材各 4 个锁定名额，其余各 2 个（仓位上限放开时只看配额）。"""
+        """热度排名前三的题材各 4 个锁定名额，其余各 2 个（仓位上限与名额总数放开时只看配额）。"""
         cfg = rules()
         cfg["live_caps"]["kobe"]["main_rise"] = 1000          # 只看配额，不让仓位上限干扰
         blocks = [
@@ -131,7 +147,7 @@ class TestAllocation:
                 rows.append(_pre(code, f"{theme}{k}", 1.0))
                 mem[code] = {theme}
         result = live.build_hits(rows=[], broken=[], phase=PHASE_RISE, rules=cfg, memory=mem,
-                                 preboard=rows, blocks=blocks,
+                                 preboard=rows, blocks=blocks, max_picks=20,
                                  news_lookup=lambda names: {n: 9 for n in names})
         by_theme = {}
         for h in result["hits"]:
@@ -181,6 +197,47 @@ class TestAllocation:
         lanes = _run([_robot("600001", "甲", "100000")])["lanes"]
         assert any("K21" in r["principle_ids"] for r in lanes["kobe"]["sell_rules"])
         assert any("C08" in r["principle_ids"] for r in lanes["chen"]["sell_rules"])
+
+
+class TestThemeCards:
+    """今日主线题材卡片上的数：名额与候选都按派分开，候选与页面「未锁定潜力股」同源同判据。"""
+
+    def test_theme_key_bridges_block_and_reason_naming(self):
+        """卡片的 key 来自题材榜（「机器人概念」），票的题材名来自涨停原因聚类（「人形机器人」）。
+
+        两套写法必须落到同一个 ``theme_key`` 上，否则页面按题材一筛就什么都剩不下。
+        """
+        rows = [zt_row("600001", "甲", reason="人形机器人", first_time="100000"),
+                zt_row("600002", "乙", reason="人形机器人", first_time="101000")]
+        result = live.build_hits(rows=rows, broken=[], phase=PHASE_BEST, rules=rules(), blocks=HOT_BLOCK,
+                                 news_lookup=lambda names: {n: 9 for n in names})
+        assert [t["key"] for t in result["hot_themes"]] == ["机器人概念"]
+        for hit in result["hits"]:
+            assert hit["theme"] == "人形机器人"            # 展示名照旧给涨停原因聚类的结果
+            assert hit["theme_key"] == "机器人概念"         # 筛选 / 名额 / 候选计数一律用卡片的 key
+
+    def test_slots_and_candidates_are_counted_per_style(self):
+        """一个题材的名额是「每派各 quota 个」，不是两派共用；候选 = 该派没拿到名额的票数。"""
+        rows = [_pre(f"6000{i:02d}", f"股{i}", 0.5 + i / 10) for i in range(1, 8)]
+        result = _preboard_run(rows, phase=PHASE_RISE, yesterday_weak={r["code"] for r in rows})
+        theme = result["hot_themes"][0]
+        assert theme["key"] == "机器人概念" and theme["quota"] == 4
+        # 两派各自锁满 4 个（题材配额 4、每派名额总数 4），剩下 3 只各自留在自己的候选里
+        assert theme["by_style"] == {"chen": {"used": 4, "candidates": 3},
+                                     "kobe": {"used": 4, "candidates": 3}}
+        assert (theme["used"], theme["candidates"]) == (8, 6)
+        for style in ("chen", "kobe"):
+            mine = [h for h in result["hits"] if h["style"] == style]
+            assert sum(1 for h in mine if h["slot"] is None) == theme["by_style"][style]["candidates"]
+            assert result["lanes"][style]["themes"][0]["used"] == 4
+
+    def test_locked_record_without_a_live_row_still_counts_on_its_theme(self):
+        """已锁定但这一轮上游没返回的票（留档行）也要算在它题材的名额里。"""
+        locked = _locked(("kobe", "600099", "trial", 10, 1, "094000"))
+        result = _preboard_run([_pre("600001", "甲", 1.0)], phase=PHASE_RISE, locked=locked)
+        missing = _hit(result, "600099")
+        assert missing["status"] == "missing" and missing["theme_key"] == "机器人概念"
+        assert result["hot_themes"][0]["by_style"]["kobe"] == {"used": 2, "candidates": 0}
 
 
 HOT_BLOCK = [{"name": "机器人概念", "limit_up_num": 5, "days": 3, "members": []}]
@@ -295,8 +352,9 @@ class TestFacts:
 
 
 class _Repo:
-    def __init__(self, snapshot=None):
+    def __init__(self, snapshot=None, pools=None):
         self.snapshot = snapshot
+        self.pools = pools or {}
         self.live = {}
 
     def snapshot_for_trade_date(self, day):
@@ -306,7 +364,7 @@ class _Repo:
         return []
 
     def pool_rows(self, day, pool="zt"):
-        return [{"code": "600009"}]
+        return self.pools.get(pool, [{"code": "600009"}])
 
     def reason_memory(self, since, pool="zt", *, until=None):
         return []
@@ -358,10 +416,48 @@ class TestPreviousContext:
         monkeypatch.setattr(fetchers, "previous_trade_date", lambda day, **kw: {"2026-10-20": "2026-10-19"}[day])
         snap = SimpleNamespace(trade_date="2026-10-19", id=1, payload=json.dumps({
             "stage": {"key": "retreat", "label": "退潮期"}, "kobe_stage": {"gate_key": "fall_2", "label": "主跌第 2 天"},
+            "metrics": {"zt_count": 33, "dt_count": 49, "lianban_count": 9},
         }))
         ctx = _service(_Repo(snap)).previous_context("2026-10-20")
         assert ctx["source"] == "review" and ctx["kobe_gate"] == "fall_2"
         assert ctx["yesterday_codes"] == ["600009"]
+        # 门控依据要一起带出来：页面上的「今日门控」卡要能解释为什么是这个阶段。
+        assert ctx["metrics"]["dt_count"] == 49 and ctx["stage"]["key"] == "retreat"
+        assert ctx["kobe_stage"]["gate_key"] == "fall_2"
+
+    def test_phase_reason_explains_both_open_and_closed_gates(self):
+        cfg = rules()
+        allowed = live._phase_reason("kobe", PHASE_BEST, cfg)
+        assert "主跌第二天" in allowed["text"] and allowed["principle_ids"] == ["K09"]
+        blocked = live._phase_reason("kobe", PHASE_RETREAT, cfg)
+        assert "此阶段不打首板" in blocked["text"] and blocked["principle_ids"] == []
+        assert "退潮期" in live._phase_reason("chen", PHASE_RETREAT, cfg)["text"]
+
+    def test_yesterday_weak_excludes_clean_limit_ups(self, monkeypatch):
+        """弱转强只认昨日的弱板：炸板 / 盘中开过板 / 尾盘偷鸡板。干净涨停的票今天再涨是二板，不是弱转强。"""
+        from src.services.daban import fetchers
+
+        live.clear_cache()
+        monkeypatch.setattr(fetchers, "previous_trade_date", lambda day, **kw: {"2026-10-20": "2026-10-19"}[day])
+        snap = SimpleNamespace(trade_date="2026-10-19", id=1, payload=json.dumps({
+            "stage": {"key": "warm", "label": "回暖期"}, "kobe_stage": {"gate_key": "fall_2", "label": "主跌第 2 天"},
+        }))
+        pools = {
+            "zt": [
+                {"code": "600001", "first_time": "100000", "last_time": "100000"},   # 干净涨停 → 不算弱
+                {"code": "600002", "first_time": "100000", "last_time": "133000"},   # 盘中开过板 → 弱
+                {"code": "600003", "first_time": "144500", "last_time": "144500"},   # 尾盘偷鸡板 → 弱
+            ],
+            "zb": [{"code": "600004"}],                                             # 炸板 → 弱
+        }
+        ctx = _service(_Repo(snap, pools=pools)).previous_context("2026-10-20")
+        assert ctx["yesterday_codes"] == ["600001", "600002", "600003"]
+        assert ctx["yesterday_weak"] == ["600002", "600003", "600004"]
+
+    def test_weak_codes_prefers_open_num_when_upstream_gives_it(self):
+        rows = [{"code": "600001", "first_time": "100000", "last_time": "100000", "open_num": 2},
+                {"code": "600002", "first_time": "100000", "last_time": "100000", "open_num": 0}]
+        assert live.weak_codes(rows, [], late="143000") == ["600001"]
 
     def test_older_review_is_never_used(self, monkeypatch):
         """库里只有更早的复盘时，不能拿来门控今天，要现算前一交易日。"""
@@ -508,6 +604,161 @@ class TestForecast:
         assert summarize_forecasts(rows)["groups"]["broken"] == {"n": 2, "touch_rate": 0.5, "seal_rate": 0.5}
 
 
+def _boom():
+    raise RuntimeError("Read timed out")
+
+
+class TestChangeFeedDegradation:
+    """拉升异动：东财 push2ex 在 09:30 后几分钟会读超时 / 断连。一路失败不清空候选，也不拖垮另一路。"""
+
+    EVENTS = [{"code": "600001", "name": "甲", "type": "RISE", "date": "", "time": "093500",
+               "order_amount": None, "change": 6.0, "price": 10.5}]
+
+    def _svc(self, monkeypatch, outcomes):
+        from data_provider import limit_up_fetcher as lu
+
+        live.clear_cache()
+        calls = {"n": 0}
+
+        def fetch(kind, *, timeout):
+            calls["n"] += 1
+            outcome = outcomes[min(calls["n"], len(outcomes)) - 1]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(lu, "fetch_em_changes", fetch)
+        return _service(_Repo())
+
+    def test_failure_reuses_the_last_good_feed(self, monkeypatch):
+        svc = self._svc(monkeypatch, [self.EVENTS, RuntimeError("Read timed out")])
+        assert svc._changes(("rise",), timeout=4, reuse_sec=90) == ({"rise": self.EVENTS}, [])
+        feeds, notes = svc._changes(("rise",), timeout=4, reuse_sec=90)
+        assert feeds["rise"] == self.EVENTS
+        assert len(notes) == 1 and "沿用" in notes[0] and "Read timed out" in notes[0]
+
+    def test_cache_is_not_reused_past_the_window(self, monkeypatch):
+        svc = self._svc(monkeypatch, [self.EVENTS, RuntimeError("Read timed out")])
+        svc._changes(("rise",), timeout=4, reuse_sec=90)
+        feeds, notes = svc._changes(("rise",), timeout=4, reuse_sec=0)
+        assert feeds["rise"] == [] and "不可用" in notes[0]
+
+    def test_failure_without_cache_is_empty_but_does_not_raise(self, monkeypatch):
+        svc = self._svc(monkeypatch, [RuntimeError("RemoteDisconnected")])
+        feeds, notes = svc._changes(("rise",), timeout=4, reuse_sec=90)
+        assert feeds["rise"] == [] and "这一路的未涨停候选为空" in notes[0]
+
+    def test_one_kind_failing_does_not_take_down_the_other(self, monkeypatch):
+        from data_provider import limit_up_fetcher as lu
+
+        live.clear_cache()
+        monkeypatch.setattr(lu, "fetch_em_changes",
+                            lambda kind, *, timeout: self.EVENTS if kind == "rise" else _boom())
+        feeds, notes = _service(_Repo())._changes(("rise", "rebound"), timeout=4, reuse_sec=90)
+        assert feeds["rise"] == self.EVENTS and feeds["rebound"] == []
+        assert len(notes) == 1 and "rebound" in notes[0]
+
+
+PHASE_RETREAT_BASE = {"available": True, "trade_date": "2026-10-22", "chen_stage": "retreat",
+                      "chen_label": "退潮期", "kobe_gate": "fall_1", "kobe_label": "主跌第 1 天",
+                      "stage": {"key": "retreat"}, "metrics": {"zt_count": 33, "dt_count": 49}}
+
+
+def _rt_metrics(**kw):
+    base = {"zt_count": 55, "zb_count": 12, "dt_count": 6, "yzt_premium": 3.38, "zab_rate": 0.18,
+            "lianban_count": 12, "max_height": 6, "promotion_rate": 0.36, "follow_rate": 0.2}
+    base.update(kw)
+    return base
+
+
+def _decide(metrics, *, now="133000", accel=None, state=None, today=None, phase=None):
+    today = today or {"stage": {"key": "ferment", "label": "发酵期"},
+                      "kobe_stage": {"gate_key": "main_rise", "label": "主升"}}
+    return live.decide_realtime_gate(
+        rules=rules(), phase=phase or PHASE_RETREAT_BASE, metrics=metrics, today=today,
+        now=now, accel_theme=accel, state=state if state is not None else {},
+    )
+
+
+class TestRealtimeGate:
+    """盘中实时门控：前一交易日只做底线，今天的 tape 给出市场验证后按今天的周期行事。"""
+
+    def test_fall_day_advances_and_late_swap(self):
+        # 科比原文「第二天的杀跌……尾盘就可以找买点」说的是当天；昨天是第 1 天，今天就按第 2 天门控。
+        assert live._advance_fall_day("fall_1") == "fall_2"
+        assert live._advance_fall_day("fall_3") == "fall_3" and live._advance_fall_day("main_rise") == "main_rise"
+        cfg = rules()
+        assert live._late_swap(cfg, "fall_2", "093500") == "fall_2_early"   # 尾盘之前只试错
+        assert live._late_swap(cfg, "fall_2", "140001") == "fall_2"         # 尾盘才给可执行
+        assert live._gate(cfg, "kobe", "fall_2_early") == "trial"
+        assert live._gate(cfg, "kobe", "fall_2") == "actionable"
+
+    def test_small_sample_keeps_the_previous_day_gate(self):
+        out = _decide(_rt_metrics(zt_count=12), now="093500")
+        assert out["active"] is False and out["upgraded"] is False
+        assert out["keys"]["chen"] == "retreat" and out["keys"]["kobe"] == "fall_2_early"
+        assert "样本太小" in out["reason"]
+
+    def test_upgrade_needs_two_consecutive_rounds(self):
+        state = {}
+        first = _decide(_rt_metrics(), state=state)
+        assert first["active"] is True and first["upgraded"] is False and "还需连续 2 轮" in first["reason"]
+        second = _decide(_rt_metrics(), state=state)
+        assert second["upgraded"] is True and second["keys"]["chen"] == "ferment"
+        assert "赚钱效应已被市场验证" in second["reason"]
+
+    def test_upgrade_only_moves_toward_more_open(self):
+        """今天比昨天更差时不降级——降级只走「资金撤了」那条路，且只停发新名额。"""
+        state = {}
+        today = {"stage": {"key": "ice", "label": "冰点期"}, "kobe_stage": {"gate_key": "fall_1", "label": "主跌第 1 天"}}
+        phase = {**PHASE_RETREAT_BASE, "chen_stage": "warm", "chen_label": "回暖期"}
+        for _ in range(2):
+            out = _decide(_rt_metrics(), state=state, today=today, phase=phase)
+        assert out["keys"]["chen"] == "warm" and out["upgraded"] is False
+
+    def test_freeze_needs_negative_premium_plus_a_weak_signal(self):
+        state = {"zt_peak": 60}
+        for _ in range(2):
+            out = _decide(_rt_metrics(zt_count=30, yzt_premium=-2.0), state=state)
+        assert out["frozen"] is True and "停发新名额" in out["reason"]
+
+    def test_rotation_exempts_the_freeze(self):
+        """大盘走弱但有热点题材在加速：资金在换题材不是在撤，不能停发名额。"""
+        state = {"zt_peak": 60}
+        for _ in range(2):
+            out = _decide(_rt_metrics(zt_count=30, yzt_premium=-2.0), state=state, accel="机器人概念")
+        assert out["frozen"] is False and "资金在换题材" in out["reason"]
+
+    def test_negative_premium_alone_does_not_freeze(self):
+        state = {}
+        for _ in range(2):
+            out = _decide(_rt_metrics(yzt_premium=-0.5, zab_rate=0.1, zt_count=55), state=state)
+        assert out["frozen"] is False
+
+    def test_theme_accelerating_counts_recent_seals_by_reason(self):
+        hot = [{"name": "机器人概念", "zt_count": 9}, {"name": "储能", "zt_count": 4}]
+        rows = [zt_row("600001", "甲", reason="人形机器人", first_time="132000"),
+                zt_row("600002", "乙", reason="机器人概念", first_time="132500"),
+                zt_row("600003", "丙", reason="储能", first_time="100000")]
+        assert live._theme_accelerating(rows, hot, now="133000", window_min=15, min_new=2) == "机器人概念"
+        assert live._theme_accelerating(rows, hot, now="133000", window_min=15, min_new=3) is None
+        assert live._theme_accelerating(rows, hot, now="150000", window_min=15, min_new=2) is None
+
+    def test_freeze_stops_new_slots_but_keeps_locked_ones(self):
+        rows = [_pre("600001", "甲", 1.0), _pre("600002", "乙", 2.0)]
+        locked = _locked(("kobe", "600001", "trial", 10, 1, "095000"))
+        result = live.build_hits(
+            rows=[], broken=[], phase=PHASE_BEST, rules=rules(), memory={c["code"]: {"机器人"} for c in rows},
+            preboard=rows, blocks=HOT_BLOCK, news_lookup=lambda names: {n: 9 for n in names},
+            locked=locked, freeze=True,
+        )
+        kobe = [h for h in result["hits"] if h["style"] == "kobe"]
+        assert [h["code"] for h in kobe if h["slot"]] == ["600001"]           # 已锁定的原样保留
+        new = next(h for h in kobe if h["code"] == "600002")
+        assert new["slot"] is None and new["action"] == "watch"
+        assert any("已停发新名额" in n for n in new["notes"])
+
+
 @pytest.mark.parametrize("now,day,expected", [
     ("093000", "2026-10-20", True), ("145959", "2026-10-20", True),
     ("091000", "2026-10-20", False), ("150100", "2026-10-20", False), ("100000", "2026-10-18", False),
@@ -517,7 +768,7 @@ def test_market_open_window(now, day, expected):
 
 
 class TestThemeFallback:
-    """题材来源：涨停原因 → 历史涨停原因 → 当日题材榜板块；都没有时明确说「待公布」，不写「无题材」。"""
+    """题材来源：涨停原因 → 历史涨停原因 → 当日题材榜板块 → 所属概念；四级都空就舍弃，不留师出无名的票。"""
 
     def test_reason_wins(self):
         rows = [_robot("600001", "甲", "100000"), _robot("600002", "乙", "100500")]
@@ -541,6 +792,54 @@ class TestThemeFallback:
         row = zt_row("600001", "甲", reason="", first_time="100000")
         hit = _hit(_run([row]), "600001")
         assert hit["theme_source"] == "" and hit["theme"] == "" and hit["theme_hint"] == ""
+
+
+class TestNamelessIsDropped:
+    """同花顺炸板池不给涨停原因，这些票靠所属概念兜底；连概念也挂不上今日题材的，两派都不碰。"""
+
+    ZT = [_robot("600001", "甲", "100000"), _robot("600002", "乙", "100500"), _robot("600003", "丙", "101000")]
+
+    def _broken(self, code="600009"):
+        return zt_row(code, "炸", reason="", first_time="101500", open_num=1)
+
+    def _run(self, concepts, *, raises=False):
+        def lookup(codes):
+            if raises:
+                raise RuntimeError("东财概念接口 500")
+            return {c: concepts for c in codes}
+
+        return live.build_hits(rows=list(self.ZT), broken=[self._broken()], phase=PHASE_BEST, rules=rules(),
+                               concepts_lookup=lookup)
+
+    def test_concept_matching_a_live_theme_fills_the_theme(self):
+        # 概念里正好有一个今天在涨停的题材：师出有名，进名单并标注来源是「所属概念」。
+        hit = _hit(self._run({"concepts": ["机器人概念", "融资融券"], "industry": "通用设备"}), "600009")
+        assert hit["theme_source"] == "concept" and hit["theme"]
+        assert all("师出无名" not in b["reason"] for b in self._run(
+            {"concepts": ["机器人概念"], "industry": ""})["blocked"])
+
+    def test_concept_picks_the_hottest_matching_theme(self):
+        # 一只票挂几十个概念很常见，只认与当日题材相交的那部分，并取其中最热的一个。
+        rows = [*self.ZT, zt_row("600004", "丁", reason="一带一路", first_time="101000")]
+        result = live.build_hits(rows=rows, broken=[self._broken()], phase=PHASE_BEST, rules=rules(),
+                                 concepts_lookup=lambda codes: {
+                                     c: {"concepts": ["一带一路", "机器人概念", "参股银行"], "industry": ""}
+                                     for c in codes})
+        hit = _hit(result, "600009")
+        assert hit["theme_source"] == "concept"
+        assert hit["theme"] == _hit(result, "600001")["theme"] != _hit(result, "600004")["theme"]
+
+    def test_nameless_row_is_dropped_from_both_styles(self):
+        result = self._run({"concepts": ["参股银行", "滨海新区"], "industry": "基础建设"})
+        assert not [h for h in result["hits"] if h["code"] == "600009"]
+        reasons = [b["reason"] for b in result["blocked"] if b["code"] == "600009"]
+        assert len(reasons) == 2 and all("师出无名" in r for r in reasons)
+
+    def test_concept_lookup_failure_keeps_the_row(self):
+        # 兜底接口挂了不能把名单清空：这一级按「没查过」处理，照旧显示「题材待公布」。
+        hit = _hit(self._run({}, raises=True), "600009")
+        assert hit["theme_source"] == "" and hit["theme_hint"] == ""
+        assert not [b for b in self._run({}, raises=True)["blocked"] if b["code"] == "600009"]
 
 
 class TestAuctionIsNotLockable:

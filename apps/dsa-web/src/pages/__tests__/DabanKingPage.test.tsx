@@ -275,9 +275,28 @@ function buildLive(overrides: Record<string, unknown> = {}) {
       chen: { phaseKey: 'warm', cap: 20, used: 5, picks: 1, locked: 0, maxPicks: 4,
         sellRules: [{ text: '触及 5% 止损线立刻离场', principleIds: ['C08'] }] },
     },
-    previous: { available: true, tradeDate: '2026-10-19', chenStage: 'warm', chenLabel: '回暖期', kobeGate: 'fall_2', kobeLabel: '主跌第 2 天' },
+    previous: {
+      available: true, tradeDate: '2026-10-19', chenStage: 'warm', chenLabel: '回暖期',
+      kobeGate: 'fall_2', kobeLabel: '主跌第 2 天',
+      metrics: { ztCount: 52, lianbanCount: 14, dtCount: 6, maxHeight: 4, promotionRate: 0.3043,
+                 yztPremium: 2.77, bigLossCount: 5 },
+      stage: {
+        key: 'warm', label: '回暖期', hitRate: 0.6667, transitional: false, secondary: null,
+        secondaryLabel: '', override: null, fallback: false,
+        conditions: [{
+          stage: 'warm', label: '回暖期', hitRate: 0.6667, items: [
+            { key: 'zt', label: '涨停家数', value: 52, threshold: '30–50', hit: false },
+            { key: 'lianban', label: '连板支数', value: 14, threshold: '5–8', hit: false },
+            { key: 'promotion_delta', label: '晋级率较昨日', value: 0.02, threshold: '上升', hit: true },
+          ],
+        }],
+      },
+      kobeStage: { key: 'main_fall', label: '主跌第 2 天', fallDay: 2, gateKey: 'fall_2' },
+    },
     gateLabels: { kobe: '主跌第 2 天', chen: '回暖期', kobeAction: 'actionable', chenAction: 'trial',
-      source: 'computed', tradeDate: '2026-10-19' },
+      source: 'computed', tradeDate: '2026-10-19',
+      chenReason: { text: '前一交易日收盘为回暖期：聚焦新题材首板/二板，轻仓试错', principleIds: ['C15'] },
+      kobeReason: { text: '前一交易日是主跌第二天：第二天的杀跌如果还在持续，尾盘就可以找买点', principleIds: ['K09'] } },
     stats: { limitUp: 52, firstBoards: 38, broken: 29, actionable: 2, trial: 3 },
     hits: [
       {
@@ -285,7 +304,7 @@ function buildLive(overrides: Record<string, unknown> = {}) {
         positionPct: 25, status: 'sealed', slot: 1, lockedAt: '09:37:50',
         firstTimeRaw: '093745', themeSource: 'reason', themeHint: '机器人', lockable: true, firstTime: '09:37:45', lastTime: '09:37:45', openNum: 1, sealed: true, limitPrice: 6.61,
         price: 6.61, changePct: 10, turnoverRate: 8.1, circMv: 3.3e9, sealAmount: 5e7, sealRatio: 0.015,
-        reason: '工业机器人+冶金装备', highDays: '首板', limitUpType: '换手板', theme: '机器人', themeRank: 1,
+        reason: '工业机器人+冶金装备', highDays: '首板', limitUpType: '换手板', theme: '机器人', themeKey: '机器人概念', themeRank: 1,
         themeMain: true, novelty: '老题材', peers: 2, peerCodes: [], notes: [],
         phase: '主跌第 2 天',
         reasons: [{ text: '前一交易日处于主跌第 2 天，按科比的周期门控今天可以打首板', principleIds: ['K33', 'C24'] }],
@@ -295,7 +314,7 @@ function buildLive(overrides: Record<string, unknown> = {}) {
         positionPct: 5, status: 'opened', slot: 1, lockedAt: null,
         firstTimeRaw: '092500', themeSource: '', themeHint: '', lockable: false, firstTime: '09:25:00', lastTime: '09:25:00', openNum: 0, sealed: true, limitPrice: 11,
         price: 11, changePct: 10, turnoverRate: 2, circMv: 4e9, sealAmount: 1e8, sealRatio: 0.025,
-        reason: '人形机器人', highDays: '首板', limitUpType: '一字板', theme: '机器人', themeRank: 1,
+        reason: '人形机器人', highDays: '首板', limitUpType: '一字板', theme: '机器人', themeKey: '机器人概念', themeRank: 1,
         themeMain: true, novelty: '老题材', peers: 0, peerCodes: [], notes: ['竞价 / 开盘即封：多为一字板，打板买不到，只观察'],
         phase: '回暖期',
         reasons: [{ text: '前一交易日收盘为回暖期，原文此阶段「聚焦新题材首板/二板」', principleIds: ['C15'] }],
@@ -306,7 +325,7 @@ function buildLive(overrides: Record<string, unknown> = {}) {
         sealedInTheme: 7, themeNews: 30, firstTimeRaw: '103000', themeSource: 'history', themeHint: '人工智能', lockable: true,
         firstTime: '10:30:00', lastTime: '—', openNum: 0, sealed: false, limitPrice: 20.5, price: 19.6,
         changePct: 5.0, turnoverRate: 6.0, circMv: 5e9, sealAmount: null, sealRatio: null,
-        reason: '', highDays: '', limitUpType: '', theme: '人工智能', themeRank: 2, themeMain: true,
+        reason: '', highDays: '', limitUpType: '', theme: '人工智能', themeKey: '人工智能', themeRank: 2, themeMain: true,
         novelty: '新题材', peers: 7, peerCodes: [], phase: '主跌第 2 天',
         notes: [], reasons: [{ text: '人工智能今日 7 只涨停', principleIds: ['C14'] }],
       },
@@ -316,7 +335,7 @@ function buildLive(overrides: Record<string, unknown> = {}) {
         sealedInTheme: 5, firstTimeRaw: '104000', themeSource: 'history', themeHint: '军工', lockable: false,
         firstTime: '10:40:00', lastTime: '—', openNum: 0, sealed: false, limitPrice: 8.9, price: 8.57,
         changePct: 5.3, turnoverRate: 7.2, circMv: 4.2e9, sealAmount: null, sealRatio: null,
-        reason: '', highDays: '', limitUpType: '', theme: '军工', themeRank: 3, themeMain: true,
+        reason: '', highDays: '', limitUpType: '', theme: '军工', themeKey: '', themeRank: 3, themeMain: true,
         novelty: '新题材', peers: 5, peerCodes: [], phase: '主跌第 2 天',
         notes: ['未涨停：现价 8.57，涨停价 8.90，还差 3.8%'],
         reasons: [{ text: '「军工」今日已 5 只涨停，资金在往这个方向走', principleIds: ['C14'] }],
@@ -327,7 +346,7 @@ function buildLive(overrides: Record<string, unknown> = {}) {
         firstTimeRaw: '103000', themeSource: 'block', themeHint: '机器人概念', lockable: true,
         firstTime: '10:30:00', lastTime: '10:30:00', openNum: 0, sealed: true, limitPrice: 12.3, price: 12.3,
         changePct: 10, turnoverRate: 6, circMv: 4e9, sealAmount: 3e7, sealRatio: 0.008,
-        reason: '', highDays: '首板', limitUpType: '换手板', theme: '', themeRank: null, themeMain: false,
+        reason: '', highDays: '首板', limitUpType: '换手板', theme: '', themeKey: '机器人概念', themeRank: null, themeMain: false,
         novelty: '', peers: 1, peerCodes: [], phase: '主跌第 2 天',
         notes: ['今天「分 4 个票」的名额已锁定用满，只观察'],
         reasons: [{ text: '同题材此前只有 1 只触板', principleIds: ['K33'] }],
@@ -336,11 +355,19 @@ function buildLive(overrides: Record<string, unknown> = {}) {
     blocked: [{ code: '600002', name: '乙股份', style: 'chen', theme: '', reason: '陈小群线：前一交易日收盘为退潮期，此阶段不做首板' }],
     themes: [],
     hotThemes: [
-      { key: '机器人概念', name: '机器人概念', rank: 1, quota: 4, used: 1, ztCount: 9, days: 4, share: 0.18, newsCount: 12, candidates: 2 },
-      { key: '人工智能', name: '人工智能', rank: 2, quota: 4, used: 0, ztCount: 7, days: 2, share: 0.14, newsCount: 30, candidates: 1 },
+      { key: '机器人概念', name: '机器人概念', rank: 1, quota: 4, used: 2, ztCount: 9, days: 4, share: 0.18, newsCount: 12, candidates: 1,
+        byStyle: { chen: { used: 1, candidates: 0 }, kobe: { used: 1, candidates: 1 } } },
+      { key: '人工智能', name: '人工智能', rank: 2, quota: 4, used: 0, ztCount: 7, days: 2, share: 0.14, newsCount: 30, candidates: 1,
+        byStyle: { chen: { used: 0, candidates: 0 }, kobe: { used: 0, candidates: 1 } } },
     ],
     events: { recent: [{ code: '002347', name: '泰尔股份', type: 'FIRST_LIMIT', date: '2026-10-20', time: '093745', orderAmount: 5e7 }], counts: { first: 80, back: 12, failed: 30 } },
     degradedReasons: [],
+    realtimeGate: {
+      enabled: true, active: true, upgraded: true, frozen: false,
+      reason: '昨日涨停今日溢价 +3.38%、当日涨停 55 只（昨收 33）：赚钱效应已被市场验证，按今天的周期（发酵期）门控',
+      accelTheme: '机器人概念', todayLabel: '发酵期', todayKobeLabel: '主升',
+      metrics: { ztCount: 55, zbCount: 12, dtCount: 6, yztPremium: 3.38, zabRate: 0.18 },
+    },
     ...overrides,
   };
 }
@@ -380,6 +407,53 @@ describe('DabanKingPage live radar', () => {
     expect(screen.getByText(/今日不允许的涨停股/)).toBeInTheDocument();
   });
 
+  it('spells out why today is gated: stage conditions, previous-session metrics and each lane doctrine', async () => {
+    mockGetLive.mockResolvedValue(buildLive());
+    renderPage('/daban-king?tab=live');
+    await screen.findByRole('region', { name: '92科比打法' });
+
+    // 阶段判定：标签 + 条件命中率 + 该阶段三个条件的实际值与阈值
+    expect(screen.getByText('判定依据')).toBeInTheDocument();
+    expect(screen.getByText(/条件命中 67%/)).toBeInTheDocument();
+    expect(screen.getByText('晋级率较昨日')).toBeInTheDocument();
+    expect(screen.getByText('期望 30–50')).toBeInTheDocument();
+    // 前一交易日的五大指标
+    expect(screen.getByText(/涨停 52 · 连板 14 · 跌停 6 · 最高 4 板 · 晋级率 30% · 昨涨停今溢价 \+2\.8% · 大面 5/))
+      .toBeInTheDocument();
+    // 每派各自的原话与连续杀跌天数
+    expect(screen.getByText(/聚焦新题材首板\/二板，轻仓试错/)).toBeInTheDocument();
+    expect(screen.getByText(/尾盘就可以找买点/)).toBeInTheDocument();
+    expect(screen.getByText(/连续杀跌第 2 天/)).toBeInTheDocument();
+  });
+
+  it('surfaces the live re-gating decision, its reason and the rotation exemption', async () => {
+    mockGetLive.mockResolvedValue(buildLive());
+    renderPage('/daban-king?tab=live');
+    await screen.findByRole('region', { name: '92科比打法' });
+
+    expect(screen.getByText('盘中已按今天的周期门控：发酵期')).toBeInTheDocument();
+    expect(screen.getByText(/「机器人概念」仍在加速封板/)).toBeInTheDocument();
+    expect(screen.getByText(/赚钱效应已被市场验证/)).toBeInTheDocument();
+    expect(screen.getByText(/此刻：涨停 55 · 炸板 12 · 跌停 6 · 昨涨停今溢价 \+3\.4% · 炸板率 18%/))
+      .toBeInTheDocument();
+  });
+
+  it('shows the paused-slots state when money dries up with no rotation', async () => {
+    mockGetLive.mockResolvedValue(buildLive({
+      realtimeGate: {
+        enabled: true, active: true, upgraded: false, frozen: true,
+        reason: '赚钱效应回落（溢价 -2.00%、炸板率 48% 高于 35%）且没有题材在接力：停发新名额，已锁定的按本派卖出纪律处理',
+        accelTheme: null, todayLabel: '退潮期', todayKobeLabel: '主跌第 1 天',
+        metrics: { ztCount: 30, zbCount: 28, dtCount: 18, yztPremium: -2, zabRate: 0.48 },
+      },
+    }));
+    renderPage('/daban-king?tab=live');
+    await screen.findByRole('region', { name: '92科比打法' });
+
+    expect(screen.getByText('盘中已停发新名额')).toBeInTheDocument();
+    expect(screen.getByText(/没有题材在接力/)).toBeInTheDocument();
+  });
+
   it('separates locked slots from watch candidates and shows the theme source', async () => {
     mockGetLive.mockResolvedValue(buildLive());
     renderPage('/daban-king?tab=live');
@@ -412,10 +486,12 @@ describe('DabanKingPage live radar', () => {
     // 今日主线题材卡片：显示涨停数 / 连续天数 / 新闻条数与候选数
     expect(await screen.findByText('今日主线题材')).toBeInTheDocument();
     expect(screen.getByText('涨停 9 · 连续 4 天 · 新闻 12 条')).toBeInTheDocument();
-    expect(screen.getAllByText('候选 2 只').length).toBeGreaterThan(0);
-    // 热度排名与名额：第 1 名 4 个名额，已用 1
-    expect(screen.getByText('名额 1/4')).toBeInTheDocument();
-    expect(screen.getByText('名额 0/4')).toBeInTheDocument();
+    // 名额与候选都按派分开：题材名额是「每派各 4 个」，不是两派共用 4 个
+    expect(screen.getByText('名额 陈 1/4 · 科 1/4')).toBeInTheDocument();
+    expect(screen.getByText('名额 陈 0/4 · 科 0/4')).toBeInTheDocument();
+    expect(screen.getAllByText('候选 陈 0 · 科 1')).toHaveLength(2);
+    // 「全部题材」给的是两派未锁定的总数（含贴不上热点题材的票）
+    expect(screen.getByText('候选 陈 0 · 科 3')).toBeInTheDocument();
 
     const kobe = screen.getByRole('region', { name: '92科比打法' });
     fireEvent.click(within(kobe).getByRole('tab', { name: /未锁定潜力股/ }));
@@ -426,10 +502,28 @@ describe('DabanKingPage live radar', () => {
     fireEvent.click(screen.getByRole('tab', { name: /人工智能/ }));
     expect(within(kobe).getByText('戊股份')).toBeInTheDocument();
     expect(within(kobe).queryByText('丁股份')).not.toBeInTheDocument();
+    // 题材卡片上的候选数 = 该题材下「未锁定潜力股」的条数
+    expect(within(kobe).getByRole('tab', { name: /未锁定潜力股 1/ })).toBeInTheDocument();
+
+    // 展示名与题材榜写法不同（「机器人」vs「机器人概念」）的票也要能筛到
+    fireEvent.click(screen.getByRole('tab', { name: /机器人概念/ }));
+    expect(within(kobe).getByRole('tab', { name: /已锁定 1/ })).toBeInTheDocument();
+    expect(within(kobe).getByRole('tab', { name: /未锁定潜力股 1/ })).toBeInTheDocument();
+    expect(within(kobe).getByText('丙股份')).toBeInTheDocument();
+    expect(within(kobe).queryByText('戊股份')).not.toBeInTheDocument();
 
     // 回到全部
-    fireEvent.click(screen.getByRole('tab', { name: '全部题材' }));
+    fireEvent.click(screen.getByRole('tab', { name: /全部题材/ }));
     expect(within(kobe).getByText('丁股份')).toBeInTheDocument();
+  });
+
+  it('puts the just-happened feed above the leading-theme cards', async () => {
+    mockGetLive.mockResolvedValue(buildLive());
+    renderPage('/daban-king?tab=live');
+
+    const events = await screen.findByText('刚刚发生');
+    const themes = screen.getByText('今日主线题材');
+    expect(events.compareDocumentPosition(themes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('marks a theme as pending instead of claiming none', async () => {

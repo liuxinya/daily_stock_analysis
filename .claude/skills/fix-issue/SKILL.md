@@ -50,11 +50,12 @@ git pull --ff-only
 
 ### Step 4: 按改动面验证
 
-按 `AGENTS.md` 的验证矩阵执行最接近的检查：
+按 `AGENTS.md` 的验证矩阵与「本地验证分级」执行最接近的检查：
 
-- 后端优先：`./scripts/ci_gate.sh`
-- 最低后端要求：`python -m py_compile <changed_python_files>`
-- 前端：`cd apps/dsa-web && npm ci && npm run lint && npm run build`
+- 后端默认：`python -m py_compile <changed_python_files>` + 直接相关的测试文件
+- 后端全量（命中高风险区域或提交前）：`./scripts/ci_gate.sh`
+- 前端默认：`cd apps/dsa-web && npx eslint <changed_files> && npx tsc -b`
+- 前端全量（命中高风险区域或提交前）：`cd apps/dsa-web && npm run lint && npm run build`
 - 桌面端：先构建 Web，再构建桌面端
 
 如无法完成完整验证，必须记录缺口、原因与潜在风险。

@@ -1,10 +1,11 @@
 import type React from 'react';
 import { useState } from 'react';
-import { Check, ChevronDown, Minus, X } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { SectionCard, StatCard } from '../common';
 import type { UiTextKey } from '../../i18n/uiText';
 import type { DabanHistoryItem, DabanOverview } from '../../types/daban';
 import { cn } from '../../utils/cn';
+import { HitIcon } from './shared';
 import {
   changeTone,
   formatDelta,
@@ -23,12 +24,6 @@ type Props = {
   selectedDate: string | null;
   onSelectDate: (date: string) => void;
   t: Translate;
-};
-
-const HitIcon: React.FC<{ hit: boolean | null }> = ({ hit }) => {
-  if (hit === true) return <Check className="h-3.5 w-3.5 text-danger" aria-label="命中" />;
-  if (hit === false) return <X className="h-3.5 w-3.5 text-muted-text" aria-label="未命中" />;
-  return <Minus className="h-3.5 w-3.5 text-muted-text" aria-label="数据缺失" />;
 };
 
 /**

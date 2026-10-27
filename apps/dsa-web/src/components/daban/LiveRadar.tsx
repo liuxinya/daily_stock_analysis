@@ -6,7 +6,7 @@ import type { UiTextKey } from '../../i18n/uiText';
 import type { DabanLive, DabanLiveHit, DabanPrinciple, DabanStyle } from '../../types/daban';
 import { cn } from '../../utils/cn';
 import { ACTION_VARIANTS, changeTone, formatPct, formatRate, STYLE_TEXT } from './format';
-import { CitedLine, StockLink } from './shared';
+import { CitedLine, HitIcon, PrincipleTags, StockLink } from './shared';
 
 type Translate = (key: UiTextKey, params?: Record<string, string | number>) => string;
 
@@ -207,19 +207,20 @@ export const LiveRadar: React.FC<{
   }
 
   const styles: DabanStyle[] = ['chen', 'kobe'];
-  // 后端已按热度排序；这里按涨停数、新闻数兜底排序，并取「本页已用名额」的最大值展示
+  // 后端已按热度排序；这里按排名、涨停数兜底排序
   const sortedThemes = [...(live.hotThemes ?? [])].sort(
     (a, b) => (a.rank ?? 99) - (b.rank ?? 99) || b.ztCount - a.ztCount
   );
-  const usedByTheme = new Map<string, number>();
-  live.hits.forEach((hit) => {
-    if (hit.slot && hit.theme) usedByTheme.set(hit.theme, (usedByTheme.get(hit.theme) ?? 0) + 1);
-  });
-  sortedThemes.forEach((theme) => {
-    theme.used = usedByTheme.get(theme.name) ?? theme.used ?? 0;
-  });
   const byStyle = (style: DabanStyle) => live.hits.filter((hit) => hit.style === style);
+  /** 拿到名额 = 已锁定。题材卡片上的「名额 / 候选」由后端按同一判据分派统计，两边的数对得上。 */
+  const isLocked = (hit: DabanLiveHit) => hit.slot !== null && hit.slot !== undefined;
+  const freeCount = (style: DabanStyle) => byStyle(style).filter((hit) => !isLocked(hit)).length;
   const refreshDisabled = !live.previous?.available;
+  // 门控依据：前一交易日的阶段判定与指标。被判成这个阶段的条件要摆在页面上，用户才能自己核对。
+  const prevStage = live.previous?.stage;
+  const prevMetrics = live.previous?.metrics;
+  const rt = live.realtimeGate;
+  const gateConditions = prevStage?.conditions?.find((entry) => entry.stage === prevStage.key)?.items ?? [];
 
   return (
     <div className="space-y-4">
@@ -265,6 +266,8 @@ export const LiveRadar: React.FC<{
           {styles.map((style) => {
             const action = style === 'chen' ? live.gateLabels.chenAction : live.gateLabels.kobeAction;
             const phase = style === 'chen' ? live.gateLabels.chen : live.gateLabels.kobe;
+            const reason = style === 'chen' ? live.gateLabels.chenReason : live.gateLabels.kobeReason;
+            const fallDay = style === 'kobe' ? live.previous?.kobeStage?.fallDay ?? 0 : 0;
             return (
               <div key={style} className="rounded-xl border border-border/50 bg-elevated/30 p-3">
                 <p className={cn('text-sm font-semibold', STYLE_TEXT[style])}>{styleLabels[style]}</p>
@@ -276,6 +279,14 @@ export const LiveRadar: React.FC<{
                     ? t('dabanKing.live.allowed', { action: action === 'actionable' ? t('dabanKing.live.actActionable') : action === 'trial' ? t('dabanKing.live.actTrial') : t('dabanKing.live.actWatch') })
                     : t('dabanKing.live.forbidden')}
                 </p>
+                {reason?.text ? (
+                  <p className="mt-1 text-[11px] leading-relaxed text-secondary-text">
+                    {reason.text} <PrincipleTags ids={reason.principleIds ?? []} principles={principles} />
+                  </p>
+                ) : null}
+                {fallDay >= 1 ? (
+                  <p className="mt-0.5 text-[11px] text-muted-text">{t('dabanKing.live.gateFallDay', { n: fallDay })}</p>
+                ) : null}
                 {style === 'chen' && live.gateLabels.chenW2sAction ? (
                   <p className="mt-0.5 text-[11px] text-cyan">{t('dabanKing.live.chenW2s')}</p>
                 ) : null}
@@ -283,6 +294,74 @@ export const LiveRadar: React.FC<{
             );
           })}
         </div>
+        {rt?.enabled && rt.reason ? (
+          <div
+            className={cn(
+              'mt-2 rounded-xl border p-2.5 text-[11px]',
+              rt.upgraded ? 'border-danger/40 bg-danger/5' : rt.frozen ? 'border-warning/40 bg-warning/5'
+                : 'border-border/40 bg-elevated/20'
+            )}
+          >
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className={cn('font-semibold', rt.upgraded ? 'text-danger' : rt.frozen ? 'text-warning' : 'text-secondary-text')}>
+                {rt.upgraded ? t('dabanKing.live.rtUpgraded', { phase: rt.todayLabel || '—' })
+                  : rt.frozen ? t('dabanKing.live.rtFrozen')
+                    : rt.active ? t('dabanKing.live.rtWatching') : t('dabanKing.live.rtIdle')}
+              </span>
+              {rt.accelTheme ? (
+                <span className="text-cyan">{t('dabanKing.live.rtAccel', { theme: rt.accelTheme })}</span>
+              ) : null}
+            </div>
+            <p className="mt-1 text-secondary-text">{rt.reason}</p>
+            {rt.metrics ? (
+              <p className="mt-1 tabular-nums text-muted-text">
+                {t('dabanKing.live.rtMetrics', {
+                  zt: rt.metrics.ztCount ?? 0,
+                  zb: rt.metrics.zbCount ?? 0,
+                  dt: rt.metrics.dtCount ?? 0,
+                  premium: formatPct(rt.metrics.yztPremium),
+                  zab: formatRate(rt.metrics.zabRate),
+                })}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {prevStage ? (
+          <div className="mt-2 rounded-xl border border-border/40 bg-elevated/20 p-2.5">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+              <span className="text-secondary-text">{t('dabanKing.live.gateBasis')}</span>
+              <span className="font-semibold text-foreground">{prevStage.label}</span>
+              <span className="text-secondary-text">{t('dabanKing.hitRate', { hit: formatRate(prevStage.hitRate) })}</span>
+              {prevStage.fallback ? <span className="text-warning">{t('dabanKing.live.gateFallback')}</span> : null}
+            </div>
+            {prevStage.override ? <p className="mt-1 text-[11px] text-warning">{prevStage.override}</p> : null}
+            {prevMetrics ? (
+              <p className="mt-1 text-[11px] tabular-nums text-secondary-text">
+                {t('dabanKing.live.gateMetrics', {
+                  zt: prevMetrics.ztCount ?? 0,
+                  lianban: prevMetrics.lianbanCount ?? 0,
+                  dt: prevMetrics.dtCount ?? 0,
+                  height: prevMetrics.maxHeight ?? 0,
+                  promotion: formatRate(prevMetrics.promotionRate),
+                  premium: formatPct(prevMetrics.yztPremium),
+                  bigLoss: prevMetrics.bigLossCount ?? 0,
+                })}
+              </p>
+            ) : null}
+            {gateConditions.length ? (
+              <ul className="mt-1.5 space-y-0.5">
+                {gateConditions.map((item) => (
+                  <li key={item.label} className="flex items-center gap-1.5 text-[11px] text-secondary-text">
+                    <HitIcon hit={item.hit} />
+                    <span>{item.label}</span>
+                    <span className="tabular-nums text-foreground">{item.value ?? '—'}</span>
+                    <span className="text-muted-text">{t('dabanKing.live.gateExpect', { threshold: item.threshold })}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
         {live.gateLabels.tradeDate ? (
           <p className="mt-2 text-[11px] text-secondary-text">
             {t('dabanKing.live.gateSource', {
@@ -302,6 +381,27 @@ export const LiveRadar: React.FC<{
         </div>
       </SectionCard>
 
+      {live.events?.recent?.length ? (
+        <SectionCard title={t('dabanKing.live.eventsTitle')} subtitle={t('dabanKing.live.eventsSubtitle')}>
+          <div className="mb-2 flex gap-3 text-xs text-secondary-text">
+            <span className="text-danger">{t('dabanKing.live.evFirst', { n: live.events.counts?.first ?? 0 })}</span>
+            <span className="text-cyan">{t('dabanKing.live.evBack', { n: live.events.counts?.back ?? 0 })}</span>
+            <span className="text-success">{t('dabanKing.live.evFailed', { n: live.events.counts?.failed ?? 0 })}</span>
+          </div>
+          <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+            {live.events.recent.slice(0, 12).map((event) => (
+              <li key={`${event.code}-${event.type}-${event.time}`} className="text-secondary-text">
+                <span className="tabular-nums">{event.time.slice(0, 2)}:{event.time.slice(2, 4)}</span>{' '}
+                <span className={event.type === 'LIMIT_FAILED' ? 'text-success' : event.type === 'LIMIT_BACK' ? 'text-cyan' : 'text-danger'}>
+                  {event.name}
+                </span>{' '}
+                {event.type === 'LIMIT_FAILED' ? t('dabanKing.live.evOpen') : event.type === 'LIMIT_BACK' ? t('dabanKing.live.evBackOne') : t('dabanKing.live.evSeal')}
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      ) : null}
+
       {live.hotThemes?.length ? (
         <SectionCard title={t('dabanKing.live.hotTitle')} subtitle={t('dabanKing.live.hotSubtitle')}>
           <div className="flex flex-wrap gap-2" role="tablist" aria-label={t('dabanKing.live.hotTitle')}>
@@ -316,6 +416,9 @@ export const LiveRadar: React.FC<{
               )}
             >
               {t('dabanKing.live.hotAll')}
+              <span className="mt-0.5 block text-[10px] text-cyan">
+                {t('dabanKing.live.hotCandidates', { chen: freeCount('chen'), kobe: freeCount('kobe') })}
+              </span>
             </button>
             {sortedThemes.map((theme, index) => {
               const hue = heatHue(index, sortedThemes.length);
@@ -351,36 +454,22 @@ export const LiveRadar: React.FC<{
                     })}
                   </span>
                   <span className="block text-[10px] text-foreground">
-                    {t('dabanKing.live.hotQuota', { used: theme.used ?? 0, quota: theme.quota ?? 2 })}
+                    {t('dabanKing.live.hotQuota', {
+                      chen: theme.byStyle?.chen?.used ?? 0,
+                      kobe: theme.byStyle?.kobe?.used ?? 0,
+                      quota: theme.quota ?? 2,
+                    })}
                   </span>
                   <span className="block text-[10px] text-cyan">
-                    {t('dabanKing.live.hotCandidates', { n: theme.candidates ?? 0 })}
+                    {t('dabanKing.live.hotCandidates', {
+                      chen: theme.byStyle?.chen?.candidates ?? 0,
+                      kobe: theme.byStyle?.kobe?.candidates ?? 0,
+                    })}
                   </span>
                 </button>
               );
             })}
           </div>
-        </SectionCard>
-      ) : null}
-
-      {live.events?.recent?.length ? (
-        <SectionCard title={t('dabanKing.live.eventsTitle')} subtitle={t('dabanKing.live.eventsSubtitle')}>
-          <div className="mb-2 flex gap-3 text-xs text-secondary-text">
-            <span className="text-danger">{t('dabanKing.live.evFirst', { n: live.events.counts?.first ?? 0 })}</span>
-            <span className="text-cyan">{t('dabanKing.live.evBack', { n: live.events.counts?.back ?? 0 })}</span>
-            <span className="text-success">{t('dabanKing.live.evFailed', { n: live.events.counts?.failed ?? 0 })}</span>
-          </div>
-          <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
-            {live.events.recent.slice(0, 12).map((event) => (
-              <li key={`${event.code}-${event.type}-${event.time}`} className="text-secondary-text">
-                <span className="tabular-nums">{event.time.slice(0, 2)}:{event.time.slice(2, 4)}</span>{' '}
-                <span className={event.type === 'LIMIT_FAILED' ? 'text-success' : event.type === 'LIMIT_BACK' ? 'text-cyan' : 'text-danger'}>
-                  {event.name}
-                </span>{' '}
-                {event.type === 'LIMIT_FAILED' ? t('dabanKing.live.evOpen') : event.type === 'LIMIT_BACK' ? t('dabanKing.live.evBackOne') : t('dabanKing.live.evSeal')}
-              </li>
-            ))}
-          </ul>
         </SectionCard>
       ) : null}
 
@@ -390,10 +479,12 @@ export const LiveRadar: React.FC<{
           const lane = live.lanes?.[style];
           // 已锁定：拿到名额的票（动作与仓位锁定）。未锁定潜力股：通过了本派门控但没拿到名额，
           // 或刚被发现还没轮到——按发现时间倒序，最新的在最上面。
-          const inTheme = (hit: DabanLiveHit) => themeFilter === null || hit.theme === themeFilter;
-          const locked = rows.filter((hit) => hit.slot !== null && hit.slot !== undefined && inTheme(hit));
+          // 筛选只认 themeKey：`theme` 是展示名（涨停原因聚类出的「机器人」），题材卡片的 key 来自
+          // 题材榜（「机器人概念」），按展示名比字符串会把整列筛空。
+          const inTheme = (hit: DabanLiveHit) => themeFilter === null || hit.themeKey === themeFilter;
+          const locked = rows.filter((hit) => isLocked(hit) && inTheme(hit));
           const potential = rows
-            .filter((hit) => (hit.slot === null || hit.slot === undefined) && inTheme(hit))
+            .filter((hit) => !isLocked(hit) && inTheme(hit))
             .sort((a, b) => (b.firstTimeRaw ?? '').localeCompare(a.firstTimeRaw ?? ''));
           return (
             <section key={style} aria-label={styleLabels[style]} className="rounded-2xl border border-subtle bg-card/70 p-4">

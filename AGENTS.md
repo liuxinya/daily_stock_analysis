@@ -160,17 +160,35 @@ gh run view <run_id> --log-failed
 
 若 PR 上已有对应 CI 结果，可直接引用 CI 结论；若 CI 未覆盖改动面，或本地与 CI 环境差异较大，需要补充说明本地验证与缺口。
 
+### 本地验证分级
+
+本地验证默认只做与改动文件直接相关的**窄检查**，不默认在本地复刻一遍完整 CI；完整 gate 由 CI 承担。
+
+- 窄检查（默认）：
+  - Python：`python -m py_compile <changed_python_files>` + 直接相关的测试文件，例如 `python -m pytest tests/test_daban_live.py -m "not network"`
+  - Web：`cd apps/dsa-web && npx eslint <changed_files> && npx tsc -b`
+  - 已存在 `node_modules` 时不执行 `npm ci`；逻辑改动不默认执行 `vite build`
+- 完整 gate（满足任一条件时执行，Python 用 `./scripts/ci_gate.sh`，Web 用 `npm run lint && npm run build`）：
+  - 改动命中高风险区域：配置语义、API / Schema、数据源 fallback、报告结构、认证、调度、发布流程、桌面端启动链路
+  - 改动涉及依赖、lockfile、构建配置（`tsconfig*`、`vite.config*`、`package.json`、`requirements*.txt`）或 lint 规则
+  - 准备 `git commit` 或创建 / 更新 PR
+  - 窄检查失败且失败原因不清晰，需要更大范围定位
+  - 用户明确要求跑全量
+- 仅执行窄检查时，交付说明的 `未验证项` 必须写明跳过了哪一层，例如「未跑 `vite build`」「未跑全量 `pytest -m "not network"`」。
+- `npm ci` 只在 `package.json` / lockfile 变更或 `node_modules` 缺失时执行，不作为每次前端验证的前置步骤。
+
 ### 按改动面执行
 
 - Python 后端改动：
   - 适用范围：`main.py`、`src/`、`data_provider/`、`api/`、`bot/`、`tests/`
-  - 优先执行：`./scripts/ci_gate.sh`
-  - 最低要求：`python -m py_compile <changed_python_files>`
+  - 默认执行：`python -m py_compile <changed_python_files>` + 直接相关的测试文件
+  - 命中「本地验证分级」中完整 gate 条件时执行：`./scripts/ci_gate.sh`
   - 若影响 API、任务编排、报告生成、通知发送、数据源 fallback、认证、调度，交付说明中要写明是否覆盖了对应路径。
 
 - Web 前端改动：
   - 适用范围：`apps/dsa-web/`
-  - 默认执行：`cd apps/dsa-web && npm ci && npm run lint && npm run build`
+  - 默认执行：`cd apps/dsa-web && npx eslint <changed_files> && npx tsc -b`
+  - 命中「本地验证分级」中完整 gate 条件时执行：`cd apps/dsa-web && npm run lint && npm run build`
   - 若涉及 API 联调、路由、状态管理、Markdown/图表渲染或认证状态，交付说明中要明确说明联动面和未覆盖风险。
 
 - 桌面端改动：
