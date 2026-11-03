@@ -15,8 +15,10 @@
 - **门控锚定涨停池所属交易日的前一交易日**，不是「库里最近一份复盘」。库里没有那一天的复盘时现算。
 - **炸板的首板也是标的**：盘中雷达给过的票后来炸了，用户已经按打板价买了，必须留在名单与成绩单里
   （否则成绩单只剩封住的，变成幸存者偏差）。
-- **仓位先到先得**：按首次触板时间分配，每派最多「分四个票」（科比 #21），且不超过该派当前阶段的
+- **仓位先到先得**：按发现顺序分配，每派最多「分四个票」（科比 #21），且不超过该派当前阶段的
   仓位上限；用满之后的只给观察。
+- **首封时间只记真的封板**：未涨停候选（`status=preboard`）还没封过板，它的首封时间一律为空，
+  页面显示「—」；「添加时间」（`found_at`，雷达第一次看到它的时刻）单独一列，两个时间差就是提前量。
 """
 
 from __future__ import annotations
@@ -469,12 +471,17 @@ def build_hits(
     news_lookup: Optional[Any] = None,
     concepts_lookup: Optional[Any] = None,
     yesterday_weak: Optional[set] = None,
+    found_at: Optional[Dict[str, str]] = None,
     freeze: bool = False,
 ) -> Dict[str, Any]:
     """给定「当前涨停池 / 炸板池」与「前一交易日的周期」，算出两派各自能做什么。
 
     盘中快照与收盘留档都调这个函数，保证两边口径一致。``locked`` 是当天已经给出的名额
     （``{style: {code: 留档行}}``），它们原样保留，只把剩下的名额分给新出现的票。
+    ``found_at`` 是留档里的「添加时间」（``{code: HHMMSS}``）：雷达第一次看到这只票的时刻，封板后
+    仍要显示，用来对比添加到首封之间隔了多久。**按代码而不是按打法索引**——异动是市场数据，两派看到
+    的是同一时刻；按派索引会让只在另一派留过档的票在这一派显示成「—」。给出名额的时刻才分派（``seen_at``
+    → 页面的「锁定」）。
     """
     quotes = quotes or {}
     memory = memory or {}
@@ -622,6 +629,10 @@ def build_hits(
                 "status": row["status"],
                 "first_time": _fmt_time(first_time),
                 "first_time_raw": first_time,
+                # 添加时间：它作为未涨停候选被雷达发现的时刻（留档里有才有）。封板后也要留着，
+                # 和首封时间一起看就是「提前多久发现的」。
+                "found_at": _fmt_time((found_at or {}).get(code) or ""),
+                "found_at_raw": (found_at or {}).get(code) or "",
                 "last_time": _fmt_time(str(row.get("last_time") or first_time)),
                 "open_num": int(row.get("open_num") or 0),
                 "sealed": sealed,
@@ -665,7 +676,7 @@ def build_hits(
         yesterday=yesterday, memory=memory, max_picks=max_picks,
         preboard_rows=list(preboard or []), blocks=blocks, prev_blocks=prev_blocks,
         news_lookup=news_lookup, concepts_lookup=concepts_lookup, yesterday_weak=yesterday_weak,
-        hot=hot_themes,
+        hot=hot_themes, found_at=found_at,
     )
     hits.extend(preboard_hits)
 
@@ -680,8 +691,16 @@ def build_hits(
 
     lanes = _allocate(hits, phase=phase, rules=rules, max_picks=max_picks, locked=locked or {},
                       hot=hot_themes, freeze=freeze)
+    # 兜底补添加时间：``_allocate`` 会追加「这一轮上游没返回」的已锁定票，它们只认自己那一行留档；
+    # 同一只票在另一派留过档也算雷达看到过，按代码补上，两派显示同一个添加时间。
+    for hit in hits:
+        if not hit.get("found_at_raw"):
+            anchor = str((found_at or {}).get(hit["code"]) or "")
+            hit["found_at_raw"], hit["found_at"] = anchor, _fmt_time(anchor)
     _theme_counts(hits, hot_themes)
-    hits.sort(key=lambda h: (h["style"], ACTION_ORDER[h["action"]], h["first_time_raw"]))
+    # 同一派同一动作里按「进入视野的时刻」排：未涨停候选用添加时间，已封板的用首封时间。
+    hits.sort(key=lambda h: (h["style"], ACTION_ORDER[h["action"]],
+                             h.get("found_at_raw") or h.get("first_time_raw") or ""))
     return {
         "hits": hits,
         "blocked": blocked[:60],
@@ -781,6 +800,7 @@ def _preboard_hits(
     concepts_lookup: Optional[Any] = None,
     yesterday_weak: Optional[set] = None,
     hot: Optional[List[Dict[str, Any]]] = None,
+    found_at: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """还没涨停、但正在快速拉升的候选——目的是让人**买得进去**，而不是事后报告已经封板的票。
 
@@ -794,6 +814,9 @@ def _preboard_hits(
 
     候选股当下没有涨停原因：先用近 90 天的历史涨停原因贴热点板块，贴不上再用东财选股器的
     所属概念兜底。这些是**观察候选**，不占名额；卡片给出距涨停幅度与封板价。
+
+    候选还没封过板，所以**首封时间一律为空**（页面显示「—」）；异动时刻记成「添加时间」，等它真封住
+    之后首封时间才有值，两个时间差就是雷达的提前量。
     """
     cfg = rules.get("preboard") or {}
     if not cfg.get("enabled", True) or not preboard_rows:
@@ -892,6 +915,9 @@ def _preboard_hits(
 
         for item, kind in entries[:per_style]:
             row, theme = item["row"], item["theme"]
+            # 添加时间以留档为准：异动 feed 只给「最近 10 分钟」，同一只票在后续轮次里可能换成更晚的
+            # 一条异动，直接用当轮事件时间会让添加时间越刷越晚。
+            found = str((found_at or {}).get(row["code"]) or row.get("time") or "")
             news_text = (f"近 3 日新闻 {theme['news_count']} 条" if theme.get("news_count") is not None
                          else "新闻数据未取到")
             if kind == "w2s":
@@ -923,7 +949,9 @@ def _preboard_hits(
                 "style_label": STYLE_LABELS[style], "action": action,
                 "action_label": ACTION_LABELS[action], "position_pct": 0,
                 "status": "preboard", "slot": None, "locked_at": None, "lockable": True,
-                "first_time": _fmt_time(row.get("time")), "first_time_raw": row.get("time") or "",
+                # 还没封过板：首封时间留空（页面显示「—」），异动时刻记成「添加时间」。
+                "first_time": _fmt_time(""), "first_time_raw": "",
+                "found_at": _fmt_time(found), "found_at_raw": found,
                 "last_time": "—", "open_num": 0, "sealed": False, "limit_price": row["limit_up"],
                 "price": row["price"], "change_pct": row.get("change_pct"),
                 "turnover_rate": row.get("turnover_rate"), "circ_mv": row.get("circ_mv"),
@@ -977,13 +1005,15 @@ def _hit_from_record(
     hot_index: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """已锁定、但这一轮在涨停池 / 炸板池里都看不到的票（上游缺数据）：照留档原样显示，名额不动。"""
-    first = str(record.get("first_time") or "")
+    found, first = _record_times(record)
     theme = record.get("theme") or ""
     return {
         "code": record["code"], "name": record.get("name") or "", "style": style, "style_label": STYLE_LABELS[style],
         "action": record.get("action") or ACTION_TRIAL, "action_label": ACTION_LABELS.get(record.get("action"), ""),
         "position_pct": int(record.get("position_pct") or 0), "status": "missing",
-        "first_time": _fmt_time(first), "first_time_raw": first, "last_time": "—", "open_num": int(record.get("open_count") or 0),
+        "first_time": _fmt_time(first), "first_time_raw": first,
+        "found_at": _fmt_time(found), "found_at_raw": found,
+        "last_time": "—", "open_num": int(record.get("open_count") or 0),
         "sealed": None, "limit_price": record.get("limit_price"), "price": None, "change_pct": None,
         "turnover_rate": None, "circ_mv": None, "seal_amount": None, "seal_ratio": None, "reason": "",
         "high_days": "", "limit_up_type": "", "theme": theme, "theme_rank": None,
@@ -1042,7 +1072,8 @@ def _allocate(
         for record in mine_locked.values():
             name = _hot_key_for([record.get("theme") or ""], hot, hot_index)
             theme_used[name] = theme_used.get(name, 0) + 1
-        last_locked = max((str(r.get("first_time") or "") for r in mine_locked.values()), default="")
+        # 已锁定里最晚的那只是按「添加时间」比的（名额发给还没涨停的候选，那时没有首封时间）。
+        last_locked = max((_record_anchor(r) for r in mine_locked.values()), default="")
         next_slot = (max(taken) if taken else count) + 1
 
         candidates = sorted(
@@ -1075,7 +1106,8 @@ def _allocate(
                 continue
             want = _position(style, hit["action"], rules)
             room = cap - used
-            late = bool(last_locked) and hit["first_time_raw"] < last_locked
+            found_raw = str(hit.get("found_at_raw") or "")
+            late = bool(last_locked) and bool(found_raw) and found_raw < last_locked
             theme_name = str(hit.get("theme_key") or "")
             quota = quota_by_theme.get(theme_name, int((rules.get("preboard") or {}).get("quota_other", 2)))
             theme_rank = rank_by_theme.get(theme_name)
@@ -1093,7 +1125,7 @@ def _allocate(
             if room <= 0:
                 reason = f"本派当前阶段仓位上限 {cap}% 已锁定用满"
                 if late:
-                    reason += "；它首次触板更早，但数据晚到，已锁定的名额不会让出"
+                    reason += "；它更早就被发现，但数据晚到，已锁定的名额不会让出"
                 hit["notes"].append(reason + "，只观察")
                 hit["action"] = ACTION_WATCH
                 hit["action_label"] = ACTION_LABELS[ACTION_WATCH]
@@ -1134,6 +1166,26 @@ def _valid_time(value: Any) -> bool:
     return len(text) >= 4 and text.isdigit()
 
 
+def _record_times(record: Dict[str, Any]) -> Tuple[str, str]:
+    """留档行的（添加时间, 真实首封时间）。两者都可能为空。
+
+    现在两个时刻分开存：``found_at`` 是雷达第一次看到这只票的时刻，``first_time`` 只记真的封板。
+    早期的行没有 ``found_at`` 列，未涨停候选把发现时刻写进了 ``first_time``（这种行 ``gap_pct``
+    不为空），所以那种行要读成「有添加时间、没有首封时间」，否则页面会把发现时刻当成首封时间显示。
+    """
+    found = str(record.get("found_at") or "")
+    first = str(record.get("first_time") or "")
+    if not found and record.get("gap_pct") is not None:
+        found, first = first or str(record.get("seen_at") or ""), ""
+    return (found if _valid_time(found) else ""), (first if _valid_time(first) else "")
+
+
+def _record_anchor(record: Dict[str, Any]) -> str:
+    """留档行在当天的时间锚点：有添加时间就用它，否则用首封时间。两者都没有的返回空串。"""
+    found, first = _record_times(record)
+    return found or first
+
+
 def weak_codes(zt_rows: Iterable[Dict[str, Any]], broken_codes: Iterable[str], *, late: str) -> List[str]:
     """昨日的弱票：炸板 + 涨停池里的烂板（盘中开过板）与尾盘板（末封 ≥ ``late``）。
 
@@ -1158,16 +1210,18 @@ def weak_codes(zt_rows: Iterable[Dict[str, Any]], broken_codes: Iterable[str], *
 
 
 def locked_from_records(records: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, Any]]]:
-    """留档行 → ``{style: {code: 行}}``。早期没有名额序号的行按首次触板时间补一个，保证序号连续。
+    """留档行 → ``{style: {code: 行}}``。早期没有名额序号的行按时间先后补一个，保证序号连续。
 
-    没有首次封板时间的行一律不算锁定：那是集合竞价期间上游还没给时间时写下的，竞价封单可能撤掉，
-    不该占名额（早期版本会写进去，读的时候在这里兜住）。
+    **没有任何时间锚点的行一律不算锁定**：那是集合竞价期间上游还没给时间时写下的，竞价封单可能撤掉，
+    不该占名额（早期版本会写进去，读的时候在这里兜住）。名额发给的是还没涨停的候选，它们只有添加时间、
+    没有首封时间，所以两个时刻任一有效即算（见 :func:`_record_times`）。
     """
     out: Dict[str, Dict[str, Dict[str, Any]]] = {}
-    for record in sorted(records, key=lambda r: (str(r.get("first_time") or ""), r.get("code") or "")):
+    for record in sorted(records, key=lambda r: (_record_anchor(r), r.get("code") or "")):
         if record.get("action") not in (ACTION_ACTIONABLE, ACTION_TRIAL):
             continue
-        if not _valid_time(record.get("first_time")):
+        found, first = _record_times(record)
+        if not found and not first:
             continue
         style_map = out.setdefault(record["style"], {})
         row = dict(record)
@@ -1802,6 +1856,7 @@ class LiveRadarService:
                 news_lookup=self.theme_news if not payload["replay"] else None,
                 concepts_lookup=self.stock_concepts if not payload["replay"] else None,
                 yesterday_weak=set(phase.get("yesterday_weak") or ()),
+                found_at=self.found_times(pool_date),
                 freeze=bool(rt.get("frozen")),
             )
             fresh = self._record(pool_date, built["hits"]) if recording else []
@@ -1847,12 +1902,35 @@ class LiveRadarService:
             logger.warning("打板王雷达：读取已锁定名额失败 %s", exc)
             return {}
 
+    def found_times(self, trade_date: str) -> Dict[str, str]:
+        """当天每只票的「添加时间」（``{code: HHMMSS}``）：雷达第一次看到它的时刻。
+
+        - **按代码索引、取最早的一条**：异动是市场数据，两派看到的是同一时刻；按打法索引会让只在另一派
+          留过档的票在这一派显示成「—」（陈小群线的候选门槛窄，几乎全是这种）。
+        - 以留档为准而不是当轮的异动时间：异动 feed 只给最近 10 分钟，后续轮次会换成更晚的一条。
+
+        读不到时按空处理，页面显示「—」，不阻断快照。
+        """
+        try:
+            rows = self.repository.live_hits(trade_date)
+        except Exception as exc:
+            logger.warning("打板王雷达：读取添加时间失败 %s", exc)
+            return {}
+        out: Dict[str, str] = {}
+        for row in rows:
+            code, found = str(row.get("code") or ""), _record_times(row)[0]
+            if code and found and found < out.get(code, "999999"):
+                out[code] = found
+        return out
+
     def _record(self, trade_date: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """名额第一次给出的那一刻就留档（之后不改），这才是用户真正看到并可能下单的东西。"""
         calls = [
             h for h in hits
             if h["action"] in (ACTION_ACTIONABLE, ACTION_TRIAL)
-            and not h.get("locked_at") and h.get("lockable", True) and h.get("first_time_raw")
+            and not h.get("locked_at") and h.get("lockable", True)
+            # 要有时间锚点：名额给的是还没涨停的候选（只有添加时间），已封板的票用首封时间。
+            and (h.get("found_at_raw") or h.get("first_time_raw"))
         ]
         if not calls:
             return []
@@ -1916,14 +1994,21 @@ class LiveRadarService:
 
 
 def live_hit_record(hit: Dict[str, Any], *, origin: str, seen_at: Optional[str] = None) -> Dict[str, Any]:
-    """雷达标的 → ``daban_live_hits`` 一行。买入价按打板价（涨停价）记，与回测口径一致。"""
+    """雷达标的 → ``daban_live_hits`` 一行。买入价按打板价（涨停价）记，与回测口径一致。
+
+    ``first_time`` 只记真实首封时间：名额给出时它多半还没封板，这一列就留空，收盘复盘时再回填。
+    发现它的时刻记在 ``found_at``，给出这一条的时刻记在 ``seen_at``。
+    """
+    first = str(hit.get("first_time_raw") or "")
+    found = str(hit.get("found_at_raw") or "")
     return {
         "style": hit["style"],
         "code": hit["code"],
         "name": hit.get("name") or "",
         "action": hit["action"],
-        "first_time": (hit.get("first_time_raw") or "") if _valid_time(hit.get("first_time_raw")) else "",
-        "seen_at": seen_at or hit.get("first_time_raw") or "",
+        "first_time": first if _valid_time(first) else "",
+        "found_at": found if _valid_time(found) else "",
+        "seen_at": seen_at or found or first or "",
         "limit_price": hit.get("limit_price"),
         "position_pct": hit.get("position_pct"),
         "slot": hit.get("slot"),
@@ -1938,9 +2023,12 @@ def live_hit_record(hit: Dict[str, Any], *, origin: str, seen_at: Optional[str] 
 
 
 def render_hit_alert(hit: Dict[str, Any]) -> str:
+    anchor = f"添加 {hit.get('found_at') or '—'}"
+    if _valid_time(hit.get("first_time_raw")):
+        anchor += f"，首封 {hit['first_time']}"
     lines = [
         f"**{hit['style_label']}｜{hit['action_label']}｜建议仓位 ≤{hit['position_pct']}%**",
-        f"首次触板 {hit['first_time']}，打板价 {hit.get('limit_price') or '—'}",
+        f"{anchor}，打板价 {hit.get('limit_price') or '—'}",
     ]
     facts = []
     if hit.get("theme"):
@@ -1971,7 +2059,7 @@ def review_pending_live_hits(repository, *, today: str, now: str) -> int:
         if target > today or (target == today and now < "150500"):
             continue
         pending = [h for h in repository.live_hits(trade_date)
-                   if not h.get("reviewed") and h.get("limit_price") and _valid_time(h.get("first_time"))
+                   if not h.get("reviewed") and h.get("limit_price") and _record_anchor(h)
                    and h.get("origin") != "preboard"]
         codes = sorted({h["code"] for h in pending})
         if not codes:

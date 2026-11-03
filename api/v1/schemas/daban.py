@@ -120,6 +120,8 @@ class DabanLiveHit(BaseModel):
     action: str
     action_label: str = ""
     position_pct: int = 0
+    # 添加时间 = 雷达第一次看到它的时刻；first_time 只在真的封过板时才有值（未涨停候选为「—」）。
+    found_at: str = ""
     first_time: str = ""
     last_time: str = ""
     open_num: int = 0

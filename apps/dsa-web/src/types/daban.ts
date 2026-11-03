@@ -380,8 +380,12 @@ export type DabanLiveHit = {
   slot: number | null;
   /** 名额锁定的时刻（HH:MM:SS）；本轮新分配的为 null */
   lockedAt: string | null;
+  /** 真实首次封板时间（`HH:MM:SS`）；没封过板的候选为「—」 */
   firstTime: string;
   firstTimeRaw: string;
+  /** 添加时间：雷达第一次看到这只票的时刻（`HH:MM:SS`）；没留档的为「—」 */
+  foundAt: string;
+  foundAtRaw: string;
   lastTime: string;
   openNum: number;
   sealed: boolean | null;

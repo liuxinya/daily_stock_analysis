@@ -211,7 +211,7 @@ class DabanRepository:
 
         - 已有的行不改动作、仓位、名额序号、首次出现时刻——那是用户当时看到的东西；
         - 同一派同一名额序号只能属于一只票（多进程同时分配时的最后一道防线）；
-        - ``final=True``（收盘）时，给已有行写入是否封到收盘、开板次数。
+        - ``final=True``（收盘）时，给已有行写入是否封到收盘、开板次数，并补上盘中还不知道的真实首封时间。
         """
         inserted: List[Dict[str, Any]] = []
         with self.db.get_session() as session:
@@ -219,8 +219,10 @@ class DabanRepository:
                 (r.style, r.code): r for r in
                 session.execute(select(DabanLiveHit).where(DabanLiveHit.trade_date == trade_date)).scalars().all()
             }
-            # 只有「有有效首次封板时间」的行才占名额：竞价期间写下的空时间行不占位（与读取口径一致）。
-            taken = {(r.style, r.slot) for r in existing.values() if r.slot and _valid_hhmmss(r.first_time)}
+            # 只有「有时间锚点」的行才占名额：竞价期间写下的空时间行不占位（与读取口径一致）。名额给的是
+            # 还没涨停的候选，那时只有添加时间，所以 found_at 与 first_time 任一有效即算。
+            taken = {(r.style, r.slot) for r in existing.values()
+                     if r.slot and (_valid_hhmmss(r.first_time) or _valid_hhmmss(r.found_at))}
             for hit in hits:
                 key = (hit.get("style"), hit.get("code"))
                 row = existing.get(key)
@@ -247,8 +249,12 @@ class DabanRepository:
                     row.slot = hit.get("slot")
                     row.origin = "live"
                     row.seen_at = hit.get("seen_at") or row.seen_at
+                    row.found_at = row.found_at or hit.get("found_at")
                     row.gap_pct = hit.get("gap_pct")
                 elif final:
+                    # 盘中锁定时它还没封板，首封时间那时为空：收盘知道了就补上，不覆盖已有的。
+                    if not _valid_hhmmss(row.first_time) and _valid_hhmmss(hit.get("first_time")):
+                        row.first_time = hit.get("first_time")
                     if hit.get("sealed_close") is not None:
                         row.sealed_close = hit.get("sealed_close")
                     if hit.get("open_count") is not None:
@@ -387,7 +393,8 @@ def _valid_hhmmss(value: Any) -> bool:
 def _live_dict(row: DabanLiveHit) -> Dict[str, Any]:
     return {
         "trade_date": row.trade_date, "style": row.style, "code": row.code, "name": row.name,
-        "action": row.action, "first_time": row.first_time, "seen_at": row.seen_at, "limit_price": row.limit_price,
+        "action": row.action, "first_time": row.first_time, "found_at": row.found_at, "seen_at": row.seen_at,
+        "limit_price": row.limit_price,
         "position_pct": row.position_pct, "slot": row.slot, "sealed_close": row.sealed_close,
         "open_count": row.open_count,
         "theme": row.theme, "phase": row.phase, "origin": row.origin, "gap_pct": row.gap_pct,

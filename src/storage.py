@@ -540,7 +540,8 @@ class DabanLiveHit(Base):
     code = Column(String(16), nullable=False)
     name = Column(String(64))
     action = Column(String(16))
-    first_time = Column(String(8))
+    first_time = Column(String(8))  # 真实首次封板时刻；锁定时还没封板的为空，收盘复盘时回填
+    found_at = Column(String(8))  # 雷达第一次看到这只票的时刻（未涨停候选为盘口异动时间）
     seen_at = Column(String(8))  # 盘中第一次给出该标的的时刻；收盘重建补录的为空
     limit_price = Column(Float)
     position_pct = Column(Integer)
@@ -1744,6 +1745,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         existing = {column["name"] for column in inspector.get_columns(table)}
         wanted = {
             "seen_at": "VARCHAR(8)",
+            "found_at": "VARCHAR(8)",
             "position_pct": "INTEGER",
             "origin": "VARCHAR(8)",
             "slot": "INTEGER",

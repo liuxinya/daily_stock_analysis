@@ -257,6 +257,23 @@ class TestLockedSlotsAtClose:
         assert rows[0]["sealed_close"] is True                     # 收盘写入是否封住
         assert payload["live_review"]["locked_intraday"] == 1
 
+    def test_close_fills_in_the_real_first_seal_time(self, db, upstream, monkeypatch):
+        """锁定那一刻它还没涨停，首封时间留空；收盘知道真实首封时间（10:20）后补上，添加时间不动。"""
+        from src.services.daban import live as live_mod
+
+        live_mod.clear_cache()
+        monkeypatch.setattr(live_mod.LiveRadarService, "previous_context", lambda self, day: dict(PHASE_WARM))
+        svc = _service()
+        svc.repository.upsert_live_hits("2026-10-20", [{
+            "style": "kobe", "code": "603626", "name": "科森科技", "action": "actionable", "first_time": "",
+            "found_at": "101500", "seen_at": "101530", "limit_price": 22.21, "seen_price": 21.8, "gap_pct": 1.9,
+            "position_pct": 25, "slot": 1, "sealed_close": None, "open_count": 0, "theme": "机器人",
+            "phase": "主跌第 2 天", "origin": "live",
+        }], final=False)
+        svc.refresh(trade_date="2026-10-20")
+        row = next(h for h in svc.repository.live_hits("2026-10-20") if h["code"] == "603626")
+        assert row["first_time"] == "102000" and row["found_at"] == "101500" and row["slot"] == 1
+
 
 def test_existing_live_hit_table_gets_new_columns(tmp_path, monkeypatch):
     """早期版本建的 daban_live_hits 没有 slot 等列：启动时自动补列，不丢数据。"""

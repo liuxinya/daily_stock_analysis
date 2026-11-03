@@ -23,10 +23,11 @@ PHASE_RISE = {"available": True, "trade_date": "2026-10-19", "chen_stage": "ferm
               "kobe_gate": "main_rise", "kobe_label": "主升"}
 
 
-def _run(rows, *, phase=PHASE_HIGH, broken=(), quotes=None, memory=None, recent_mains=(), yesterday=(), max_picks=4):
+def _run(rows, *, phase=PHASE_HIGH, broken=(), quotes=None, memory=None, recent_mains=(), yesterday=(), max_picks=4,
+         found_at=None):
     return live.build_hits(rows=rows, broken=list(broken), phase=phase, rules=rules(), quotes=quotes or {},
                            memory=memory or {}, recent_mains=list(recent_mains), yesterday_codes=list(yesterday),
-                           max_picks=max_picks)
+                           max_picks=max_picks, found_at=found_at or {})
 
 
 def _hit(result, code, style="kobe"):
@@ -330,6 +331,91 @@ class TestLock:
             {"style": "kobe", "code": "600003", "action": "watch", "first_time": "101000", "slot": None},
         ])
         assert {code: row["slot"] for code, row in locked["kobe"].items()} == {"600001": 1, "600002": 2}
+
+
+class TestAddedAndFirstSealTime:
+    """两个时刻分开：添加时间 = 雷达第一次看到它；首封时间只在真的封过板时才有值。"""
+
+    def test_candidate_that_never_sealed_has_no_first_seal_time(self):
+        hits = _preboard_run([_pre("600001", "甲", 1.0, first="100000")])["hits"]
+        assert hits and all(h["status"] == "preboard" for h in hits)
+        assert all(h["first_time"] == "—" and h["first_time_raw"] == "" for h in hits)
+        assert all(h["found_at"] == "10:00:00" and h["found_at_raw"] == "100000" for h in hits)
+
+    def test_added_time_comes_from_the_record_not_from_the_latest_change_event(self):
+        """异动 feed 只给最近 10 分钟：后续轮次拿到更晚的一条异动时，添加时间不能跟着往后漂。"""
+        hits = live.build_hits(rows=[], broken=[], phase=PHASE_BEST, rules=rules(), memory={"600001": {"机器人"}},
+                               preboard=[_pre("600001", "甲", 1.0, first="103000")], blocks=HOT_BLOCK,
+                               news_lookup=lambda names: {n: 9 for n in names},
+                               found_at={"600001": "094500"})["hits"]
+        assert all(h["found_at"] == "09:45:00" for h in hits)
+
+    def test_sealed_stock_keeps_the_real_seal_time_and_shows_when_it_was_added(self):
+        hit = _hit(_run([_robot("600001", "甲", "100000")], found_at={"600001": "095500"}), "600001")
+        assert hit["first_time"] == "10:00:00" and hit["found_at"] == "09:55:00"
+
+    def test_both_lanes_show_the_same_added_time(self):
+        """添加时间是这只票的事实（异动是市场数据），不是某一派的：陈小群线不能因为没在本派留档就空着。"""
+        rows = [_robot("600001", "甲", "100000"), _robot("600002", "乙", "101000"), _robot("600003", "丙", "102000")]
+        result = _run(rows, found_at={"600003": "095500"})
+        assert _hit(result, "600003", "chen")["found_at"] == "09:55:00"
+        assert _hit(result, "600003", "kobe")["found_at"] == "09:55:00"
+
+    def test_missing_locked_pick_falls_back_to_the_added_time_of_the_day(self):
+        """已锁定但这一轮上游没返回的票：它那行留档没有添加时间时，用当天其他留档行的。"""
+        locked = live.locked_from_records([
+            {"style": "chen", "code": "600001", "action": "trial", "position_pct": 5, "slot": 1,
+             "first_time": "100000", "limit_price": 11.0, "theme": "机器人"},
+        ])
+        hit = _hit(live.build_hits(rows=[], broken=[], phase=PHASE_HIGH, rules=rules(), locked=locked,
+                                   found_at={"600001": "095500"}), "600001", "chen")
+        assert hit["status"] == "missing" and hit["found_at"] == "09:55:00" and hit["first_time"] == "10:00:00"
+
+    def test_sealed_stock_never_on_the_radar_has_no_added_time(self):
+        assert _hit(_run([_robot("600001", "甲", "100000")]), "600001")["found_at"] == "—"
+
+    def test_record_leaves_the_seal_time_empty_until_it_really_seals(self):
+        call = next(h for h in _preboard_run([_pre("600001", "甲", 1.0, first="100000")])["hits"]
+                    if h["action"] != "watch")
+        row = live.live_hit_record(call, origin="live", seen_at="100130")
+        assert row["first_time"] == "" and row["found_at"] == "100000" and row["seen_at"] == "100130"
+
+    def test_record_without_seal_time_still_holds_its_slot(self):
+        """名额发给的是还没涨停的候选：首封时间为空不能让它丢掉名额。"""
+        locked = live.locked_from_records([
+            {"style": "kobe", "code": "600001", "action": "trial", "position_pct": 10, "slot": 1,
+             "first_time": "", "found_at": "100000", "seen_at": "100130", "gap_pct": 1.2},
+        ])
+        assert locked["kobe"]["600001"]["slot"] == 1
+
+    def test_legacy_record_time_is_shown_as_added_not_as_first_seal(self):
+        """旧留档行把发现时刻写进了 first_time（gap_pct 不为空即是未涨停候选），不能当首封显示。"""
+        locked = live.locked_from_records([
+            {"style": "kobe", "code": "600001", "action": "trial", "position_pct": 10, "slot": 1,
+             "first_time": "100000", "seen_at": "100130", "gap_pct": 1.2, "limit_price": 11.0, "theme": "机器人"},
+        ])
+        hit = _hit(live.build_hits(rows=[], broken=[], phase=PHASE_HIGH, rules=rules(), locked=locked), "600001")
+        assert hit["status"] == "missing" and hit["slot"] == 1
+        assert hit["first_time"] == "—" and hit["found_at"] == "10:00:00"
+
+    def test_service_reads_added_times_from_both_record_formats(self):
+        repo = _Repo()
+        repo.live["2026-10-20"] = {
+            ("kobe", "600001"): {"style": "kobe", "code": "600001", "found_at": "100000", "first_time": ""},
+            ("chen", "600001"): {"style": "chen", "code": "600001", "found_at": "095500", "first_time": ""},
+            ("kobe", "600002"): {"style": "kobe", "code": "600002", "first_time": "101000", "gap_pct": 1.0},
+            ("kobe", "600003"): {"style": "kobe", "code": "600003", "first_time": "102000"},
+        }
+        assert _service(repo).found_times("2026-10-20") == {
+            "600001": "095500",                     # 两派都留过档：取最早的一条，两派显示同一个时刻
+            "600002": "101000",                     # 旧的未涨停候选行：first_time 存的是发现时刻
+        }                                           # 600003 是已封板的留档：first_time 是真首封，不是添加时间
+
+    def test_alert_shows_the_added_time_when_it_has_not_sealed_yet(self):
+        call = next(h for h in _preboard_run([_pre("600001", "甲", 1.0, first="100000")])["hits"]
+                    if h["action"] != "watch")
+        text = live.render_hit_alert(call)
+        assert "添加 10:00:00" in text and "首封" not in text
 
 
 class TestFacts:

@@ -51,8 +51,12 @@ const HitRow: React.FC<{
       <Badge variant={ACTION_VARIANTS[hit.action]}>{hit.actionLabel}</Badge>
       <StockLink code={hit.code} name={hit.name} />
       {isNew ? <Badge variant="warning">{t('dabanKing.live.new')}</Badge> : null}
+      {/* 添加时间在前、首封时间在后：两个时刻的差就是「提前多久发现的」。没封过板的首封是「—」。 */}
       <span className="text-[11px] tabular-nums text-secondary-text">
-        {t('dabanKing.live.firstTime')} {hit.firstTime}
+        {t('dabanKing.live.foundAt')} {hit.foundAt || '—'}
+      </span>
+      <span className="text-[11px] tabular-nums text-secondary-text">
+        {t('dabanKing.live.firstTime')} {hit.firstTime || '—'}
       </span>
       {hit.openNum > 0 ? (
         <span className="text-[11px] text-warning">{t('dabanKing.live.opened', { n: hit.openNum })}</span>
@@ -478,14 +482,14 @@ export const LiveRadar: React.FC<{
           const rows = byStyle(style);
           const lane = live.lanes?.[style];
           // 已锁定：拿到名额的票（动作与仓位锁定）。未锁定潜力股：通过了本派门控但没拿到名额，
-          // 或刚被发现还没轮到——按发现时间倒序，最新的在最上面。
+          // 或刚被发现还没轮到——按添加时间倒序（没留档的退回首封时间），最新的在最上面。
           // 筛选只认 themeKey：`theme` 是展示名（涨停原因聚类出的「机器人」），题材卡片的 key 来自
           // 题材榜（「机器人概念」），按展示名比字符串会把整列筛空。
           const inTheme = (hit: DabanLiveHit) => themeFilter === null || hit.themeKey === themeFilter;
           const locked = rows.filter((hit) => isLocked(hit) && inTheme(hit));
           const potential = rows
             .filter((hit) => !isLocked(hit) && inTheme(hit))
-            .sort((a, b) => (b.firstTimeRaw ?? '').localeCompare(a.firstTimeRaw ?? ''));
+            .sort((a, b) => (b.foundAtRaw || b.firstTimeRaw || '').localeCompare(a.foundAtRaw || a.firstTimeRaw || ''));
           return (
             <section key={style} aria-label={styleLabels[style]} className="rounded-2xl border border-subtle bg-card/70 p-4">
               <h2 className={cn('mb-2 flex items-center gap-2 text-lg font-semibold', STYLE_TEXT[style])}>
