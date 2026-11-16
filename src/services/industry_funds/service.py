@@ -90,10 +90,11 @@ class IndustryFundsService:
 
     # ------------------------------------------------------------------ 读缓存
 
-    def overview(self) -> Optional[Dict[str, Any]]:
-        """读取最近一份快照。没有缓存时返回 ``None``。"""
+    def overview(self, *, trade_date: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """读取快照。``trade_date`` 为空取最近一份；指定日期时取那一天的快照（没有则返回 ``None``）。"""
         self._require_enabled()
-        row = self.repository.latest_snapshot()
+        row = (self.repository.snapshot_for_trade_date(trade_date) if trade_date
+               else self.repository.latest_snapshot())
         if row is None:
             return None
         payload = self._decode_payload(row)

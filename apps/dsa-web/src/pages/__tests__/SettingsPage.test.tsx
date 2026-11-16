@@ -1717,6 +1717,7 @@ describe('SettingsPage', () => {
       lastRunAt: '2026-06-21T17:00:00+08:00',
       lastSuccessAt: null,
       lastError: 'analysis failed',
+      backgroundTasks: ['daban_king_postmarket', 'daban_king_live'],
     });
     useSystemConfigMock.mockReturnValue(buildSystemConfigState({
       activeCategory: 'system',
@@ -1768,6 +1769,7 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByTestId('scheduler-last-success')).toHaveTextContent('-');
     expect(screen.getByTestId('scheduler-last-error')).toHaveTextContent('analysis failed');
+    expect(screen.getByTestId('scheduler-background-tasks')).toHaveTextContent('daban_king_postmarket, daban_king_live');
   });
 
   it('shows active runtime scheduler state even when saved schedule flag is false', async () => {

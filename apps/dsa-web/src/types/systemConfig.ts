@@ -228,6 +228,8 @@ export interface SchedulerStatusResponse {
   lastError?: string | null;
   lastSkippedAt?: string | null;
   lastSkipReason?: string | null;
+  /** 当前注册的后台任务名（例如打板王盘后生成、盘中雷达轮询）；定时分析关闭时也可能有 */
+  backgroundTasks?: string[];
 }
 
 export interface SchedulerRunNowResponse {

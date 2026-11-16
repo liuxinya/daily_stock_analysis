@@ -117,3 +117,50 @@ class IndustryFundsHistoryResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     items: List[IndustryFundsHistoryItem] = Field(default_factory=list)
+
+class IndustryFundsFlowSeriesResponse(BaseModel):
+    """资金流向两个模块的两周序列（汪汪队 / 机构）。只做展示，不参与打分。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    days: List[str] = Field(default_factory=list)
+    national_team: Dict[str, Any] = Field(default_factory=dict)
+    institutions: Dict[str, Any] = Field(default_factory=dict)
+    generated_at: str = ""
+    duration_ms: int = 0
+
+
+class IndustryFundsFlowDateItem(BaseModel):
+    date: str
+    # 该日有没有「总览」的盘后快照（总览不回溯，只能逐日积累）
+    has_overview: bool = False
+
+
+class IndustryFundsFlowDatesResponse(BaseModel):
+    days: List[IndustryFundsFlowDateItem] = Field(default_factory=list)
+    today: str = ""
+
+
+class IndustryFundsHotMoneyResponse(BaseModel):
+    """游资席位 × 股票的买卖矩阵（只做展示）。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    days: List[str] = Field(default_factory=list)
+    seats: List[Dict[str, Any]] = Field(default_factory=list)
+    dates: List[Dict[str, Any]] = Field(default_factory=list)
+    row_limit: int = 60
+    degraded: bool = False
+    degraded_reason: str = ""
+    coverage: str = ""
+
+
+class IndustryFundsSeatDetailResponse(BaseModel):
+    """某个游资席位（或一个昵称下的多个席位）某天的逐股买卖。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    date: str = ""
+    stocks: List[Dict[str, Any]] = Field(default_factory=list)
+    degraded: bool = False
+    degraded_reason: str = ""

@@ -12,7 +12,9 @@ const SNAKE_OVERVIEW = {
   schema_version: 'daban-v1',
   trade_date: '2026-10-20',
   metrics: { zt_count: 52, yzt_premium: 2.77 },
-  lanes: { chen: { position_cap_label: '30–50%', actionable: [{ reasons: [{ text: 'x', principle_ids: ['C04'] }] }] } },
+  worldview: { for_date: '2026-10-21', boundary_text: '可以推荐', dims: [{ key: 'money_effect', live: 'x' }] },
+  watchlist: { items: [{ code: '600001', triggers: [{ text: 'x', principle_ids: ['C04'] }] }] },
+  focus_review: { stats: { by_score: { pos: { n: 1 } } } },
   // 以下三个字典的键是 id，不能被转成 k01 / m1。
   principles: { K01: { author: '92科比', ref: '#3' }, C04: { author: '陈小群' } },
   mode_labels: { M1: '龙头·分歧介入' },
@@ -30,8 +32,9 @@ describe('dabanApi', () => {
     const overview = await dabanApi.getOverview();
     expect(get).toHaveBeenCalledWith('/api/v1/daban/overview', { params: undefined });
     expect(overview.metrics.ztCount).toBe(52);
-    expect(overview.lanes.chen.positionCapLabel).toBe('30–50%');
-    expect(overview.lanes.chen.actionable[0].reasons[0].principleIds).toEqual(['C04']);
+    expect(overview.worldview?.forDate).toBe('2026-10-21');
+    expect(overview.watchlist?.items[0].triggers[0].principleIds).toEqual(['C04']);
+    expect(overview.focusReview?.stats.byScore.pos.n).toBe(1);
     expect(Object.keys(overview.principles)).toEqual(['K01', 'C04']);
     expect(overview.modeLabels).toEqual({ M1: '龙头·分歧介入' });
   });

@@ -23,8 +23,9 @@ def _payload(kind="full"):
         "trade_date": "2026-10-20",
         "metrics": {"zt_count": 52},
         "stage": {"key": "ferment", "label": "发酵期"},
-        "lanes": {"chen": {"actionable": []}, "kobe": {"actionable": []}},
-        "verdict": {"preferred": "both", "label": "两派共识日"},
+        "worldview": {"for_date": "2026-10-21", "boundary_text": "明天可以推荐", "dims": []},
+        "watchlist": {"items": []},
+        "focus_review": {"count": 0, "items": []},
         "disclaimers": {"investment": "免责声明"},
         "cached": True,
     }
@@ -90,7 +91,8 @@ def test_overview_returns_payload_and_passes_date(client, module, monkeypatch):
     response = client.get(f"{BASE}/overview", params={"trade_date": "2026-10-20"})
     assert response.status_code == 200
     body = response.json()
-    assert body["verdict"]["label"] == "两派共识日" and body["disclaimers"]["investment"]
+    assert body["worldview"]["boundary_text"] == "明天可以推荐" and body["disclaimers"]["investment"]
+    assert body["watchlist"] == {"items": []} and body["focus_review"]["count"] == 0
     assert stub.seen_dates == ["2026-10-20"]
 
 
@@ -139,3 +141,26 @@ def test_push_skipped_when_disabled(client, module, monkeypatch):
     monkeypatch.setattr(module, "DabanService", lambda: _StubService(_payload()))
     body = client.post(f"{BASE}/push").json()
     assert body["ok"] is False and body["skipped"] is True and "DABAN_PUSH_ENABLED" in body["message"]
+
+
+def test_old_snapshot_fields_pass_through(client, module, monkeypatch):
+    """2026-11 之前生成的快照还带着退役的 verdict / lanes，读历史日期时原样返回、不报错。"""
+    old = {**_payload(), "verdict": {"label": "两派共识日"}, "lanes": {"chen": {}}}
+    old.pop("worldview")
+    monkeypatch.setattr(module, "DabanService", lambda: _StubService(old))
+    body = client.get(f"{BASE}/overview").json()
+    assert body["verdict"]["label"] == "两派共识日" and body["worldview"] is None
+
+
+def test_live_returns_focus_and_limit_board(client, module, monkeypatch):
+    from src.services.daban import live
+
+    payload = {"ok": True, "trade_date": "2026-10-20", "trading": True,
+               "focus": {"groups": [{"theme_key": "机器人", "items": [{"code": "600001", "init_score": 5}]}], "count": 1},
+               "limit_board": {"groups": [], "count": 0}, "score_rules": {"threshold": 0},
+               "worldview": {"boundary": {"status": "open"}}}
+    monkeypatch.setattr(live.LiveRadarService, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(live.LiveRadarService, "snapshot", lambda self, force=False: payload)
+    body = client.get(f"{BASE}/live").json()
+    assert body["focus"]["count"] == 1 and body["score_rules"]["threshold"] == 0
+    assert body["worldview"]["boundary"]["status"] == "open" and "hits" not in body

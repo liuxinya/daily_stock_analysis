@@ -51,8 +51,22 @@ export const ThemeCards: React.FC<{ themes: DabanTheme[]; t: Translate }> = ({ t
                   {theme.storySource === 'rule' ? `（${t('dabanKing.storyRule')}）` : ''}
                 </Badge>
                 {theme.storyReason ? <p className="mt-1 text-secondary-text">{theme.storyReason}</p> : null}
-                {theme.commonality ? <p className="mt-1 text-muted-text">{theme.commonality}</p> : null}
+                {theme.commonalityText ? <p className="mt-1 text-muted-text">{theme.commonalityText}</p> : null}
               </div>
+            ) : null}
+            {typeof theme.commonality === 'string' && theme.commonality ? (
+              // 2026-11 之前的快照把 commonality 存成字符串：直接当说明展示，别去读 .label/.share（会显示 NaN%）。
+              <p className="mt-1 text-[11px] text-secondary-text">{theme.commonality}</p>
+            ) : theme.commonality && typeof theme.commonality === 'object' && theme.commonality.kind !== 'unknown' ? (
+              <p className="mt-1 text-[11px] text-secondary-text">
+                {t('dabanKing.themeCommonality', {
+                  label: theme.commonality.label,
+                  share: theme.commonality.share === null ? '—' : `${Math.round(theme.commonality.share * 100)}%`,
+                })}
+              </p>
+            ) : null}
+            {theme.expectationText ? (
+              <p className="mt-1 text-[11px] text-foreground">{t('dabanKing.themeExpectation', { text: theme.expectationText })}</p>
             ) : null}
 
             {theme.premium !== null ? (

@@ -9,12 +9,16 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.industry_funds import (
+    IndustryFundsFlowDatesResponse,
+    IndustryFundsFlowSeriesResponse,
+    IndustryFundsHotMoneyResponse,
+    IndustryFundsSeatDetailResponse,
     IndustryFundsHistoryResponse,
     IndustryFundsJobModel,
     IndustryFundsJobSubmitResponse,
@@ -34,6 +38,23 @@ router = APIRouter()
 
 def _disabled(exc: IndustryFundsUnavailableError) -> HTTPException:
     return HTTPException(status_code=404, detail={"error": "not_enabled", "message": str(exc)})
+
+
+def _ensure_enabled() -> None:
+    """模块总开关。新增接口也要走这一步：关掉之后整组接口一起不可用，不留半边可用的后门。"""
+    from src.config import get_config
+
+    if not bool(getattr(get_config(), "industry_funds_enabled", True)):
+        raise _disabled(IndustryFundsUnavailableError("行业资金模块已关闭"))
+
+
+def _validate_flow_date(value: str) -> str:
+    from datetime import datetime
+
+    try:
+        return datetime.strptime(str(value or "").strip(), "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail={"error": "bad_request", "message": "date 格式应为 YYYY-MM-DD"})
 
 
 def _not_found(message: str) -> HTTPException:
@@ -67,10 +88,14 @@ def get_status() -> Dict[str, Any]:
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Read the cached snapshot (never triggers a fetch)",
 )
-def get_overview() -> IndustryFundsOverviewResponse:
-    """只读缓存，秒回。没有缓存时返回 404，由前端提示「点刷新生成」。"""
+def get_overview(trade_date: Optional[str] = Query(None, description="YYYY-MM-DD；为空取最近一份")) -> IndustryFundsOverviewResponse:
+    """只读缓存，秒回。没有缓存时返回 404，由前端提示「点刷新生成」。
+
+    ``trade_date`` 用于「总览」tab 的历史回看：总览只回溯到本地已有的快照（每天刷新才会积累），
+    没有那一天的快照时返回 404，前端如实提示。
+    """
     try:
-        payload = IndustryFundsService().overview()
+        payload = IndustryFundsService().overview(trade_date=trade_date)
     except IndustryFundsUnavailableError as exc:
         raise _disabled(exc)
     except Exception as exc:
@@ -78,6 +103,83 @@ def get_overview() -> IndustryFundsOverviewResponse:
     if payload is None:
         raise _not_found("还没有生成过行业资金快照，请点击刷新生成")
     return IndustryFundsOverviewResponse(**payload)
+
+
+@router.get(
+    "/flow-dates",
+    response_model=IndustryFundsFlowDatesResponse,
+    summary="Date tabs for the flow view (last N trading days)",
+)
+def get_flow_dates(days: int = Query(10, ge=2, le=30)) -> IndustryFundsFlowDatesResponse:
+    """资金流向的日期 tab：最近 N 个交易日，并标出哪天有「总览」快照。"""
+    _ensure_enabled()
+    try:
+        from src.services.industry_funds import flows
+
+        return IndustryFundsFlowDatesResponse(**flows.flow_dates(days))
+    except Exception as exc:
+        raise _internal_error("Read industry funds flow dates failed", exc)
+
+
+@router.get(
+    "/flows",
+    response_model=IndustryFundsFlowSeriesResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="Two-week series for 汪汪队 (broad ETF) and institutions (dragon-tiger seats)",
+)
+def get_flows(days: int = Query(10, ge=2, le=30)) -> IndustryFundsFlowSeriesResponse:
+    """汪汪队与机构的日频序列（含每日明细）。首次请求约 5~10 秒，之后 10 分钟走进程内缓存。"""
+    _ensure_enabled()
+    try:
+        from src.services.industry_funds import flows
+
+        return IndustryFundsFlowSeriesResponse(**flows.flow_series(days))
+    except Exception as exc:
+        raise _internal_error("Read industry funds flows failed", exc)
+
+
+@router.get(
+    "/hot-money",
+    response_model=IndustryFundsHotMoneyResponse,
+    responses={500: {"model": ErrorResponse}},
+    summary="Hot-money seats × stocks: buy / sell amount per stock per seat",
+)
+def get_hot_money(days: int = Query(10, ge=2, le=30), seats: int = Query(10, ge=3, le=20)) -> IndustryFundsHotMoneyResponse:
+    """游资席位矩阵：列是最近两周买入额最大的营业部，行是股票，格子里是该席位当天的买卖额。
+
+    只展示、不参与打分。口径见 ``src/services/industry_funds/hot_money.py``。
+    """
+    _ensure_enabled()
+    try:
+        from src.services.industry_funds import hot_money as hot_money_module
+
+        return IndustryFundsHotMoneyResponse(**hot_money_module.hot_money(days, seats))
+    except Exception as exc:
+        raise _internal_error("Read industry funds hot money failed", exc)
+
+
+@router.get(
+    "/hot-money/seat",
+    response_model=IndustryFundsSeatDetailResponse,
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="One seat's trades for one day (hover bubble on the hot-money seat chips)",
+)
+def get_hot_money_seat(
+    codes: str = Query(..., description="营业部代码，多个用逗号分隔（同一昵称下的多家营业部）"),
+    date: str = Query(..., description="YYYY-MM-DD"),
+) -> IndustryFundsSeatDetailResponse:
+    """「游资席位」区悬停气泡用：某个席位当天逐股买入 / 卖出。只读、按需拉，10 分钟内走缓存。"""
+    _ensure_enabled()
+    day = _validate_flow_date(date)
+    parsed = [c.strip() for c in str(codes or "").split(",") if c.strip()][:10]
+    if not parsed:
+        raise HTTPException(status_code=400, detail={"error": "bad_request", "message": "codes 不能为空"})
+    try:
+        from src.services.industry_funds import hot_money as hot_money_module
+
+        return IndustryFundsSeatDetailResponse(**hot_money_module.seat_day_detail(parsed, day))
+    except Exception as exc:
+        raise _internal_error("Read industry funds seat detail failed", exc)
 
 
 @router.get(

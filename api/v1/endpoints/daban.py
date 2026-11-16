@@ -159,10 +159,10 @@ def get_active_job() -> DabanJobModel:
     "/live",
     response_model=DabanLiveResponse,
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    summary="Intraday first-board radar (reads live upstream, cached a few seconds)",
+    summary="Intraday radar: scored focus list and limit-up board (reads live upstream, cached a few seconds)",
 )
 def get_live(force: bool = Query(False, description="跳过进程内缓存")) -> DabanLiveResponse:
-    """盘中首板雷达。**只给行动级别与事实，不打分**：回测显示封板时刻可知的信息没有预测力。"""
+    """盘中雷达：「重点」（评分达标、还买得进、记成绩）与「涨停板」（龙 1 / 龙 2 置顶）两组。"""
     from src.config import get_config
 
     if not bool(getattr(get_config(), "daban_enabled", True)):

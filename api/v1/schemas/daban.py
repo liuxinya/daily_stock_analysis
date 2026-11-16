@@ -27,16 +27,19 @@ class DabanOverviewResponse(BaseModel):
     kobe_stage: Dict[str, Any] = Field(default_factory=dict)
     ladder: List[Dict[str, Any]] = Field(default_factory=list)
     themes: List[Dict[str, Any]] = Field(default_factory=list)
-    verdict: Dict[str, Any] = Field(default_factory=dict)
-    lanes: Dict[str, Any] = Field(default_factory=dict)
-    consensus_codes: List[str] = Field(default_factory=list)
+    # 短线世界观（给下一个交易日用）、对前一份世界观的对账、次日观察清单、今天「重点」推荐的复盘。
+    # 2026-11 之前生成的快照没有这几项，而有已退役的 verdict / lanes / review（extra=allow 原样透传）。
+    worldview: Optional[Dict[str, Any]] = None
+    worldview_check: Optional[Dict[str, Any]] = None
+    worldview_accuracy: Dict[str, Any] = Field(default_factory=dict)
+    watchlist: Dict[str, Any] = Field(default_factory=dict)
+    focus_review: Dict[str, Any] = Field(default_factory=dict)
+    # 旧雷达（锁定 + 名额时期，已停写）的成绩，新口径攒满 20 个交易日前折叠展示，之后为空。
+    legacy_live_stats: Dict[str, Any] = Field(default_factory=dict)
     excluded: List[Dict[str, Any]] = Field(default_factory=list)
-    review: Optional[Dict[str, Any]] = None
-    track_record: Dict[str, Any] = Field(default_factory=dict)
     conclusion: Dict[str, Any] = Field(default_factory=dict)
     principles: Dict[str, Any] = Field(default_factory=dict)
     mode_labels: Dict[str, str] = Field(default_factory=dict)
-    style_labels: Dict[str, str] = Field(default_factory=dict)
     sources: Dict[str, Any] = Field(default_factory=dict)
     disclaimers: Dict[str, str] = Field(default_factory=dict)
     degraded: bool = False
@@ -110,46 +113,13 @@ class DabanHistoryResponse(BaseModel):
     items: List[DabanHistoryItem] = Field(default_factory=list)
 
 
-class DabanLiveHit(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    code: str
-    name: str = ""
-    style: str
-    style_label: str = ""
-    action: str
-    action_label: str = ""
-    position_pct: int = 0
-    # 添加时间 = 雷达第一次看到它的时刻；first_time 只在真的封过板时才有值（未涨停候选为「—」）。
-    found_at: str = ""
-    first_time: str = ""
-    last_time: str = ""
-    open_num: int = 0
-    sealed: Optional[bool] = None
-    limit_price: Optional[float] = None
-    price: Optional[float] = None
-    change_pct: Optional[float] = None
-    turnover_rate: Optional[float] = None
-    circ_mv: Optional[float] = None
-    seal_amount: Optional[float] = None
-    seal_ratio: Optional[float] = None
-    reason: str = ""
-    high_days: str = ""
-    limit_up_type: str = ""
-    theme: str = ""
-    theme_key: str = ""
-    theme_rank: Optional[int] = None
-    theme_main: bool = False
-    novelty: str = ""
-    peers: int = 0
-    peer_codes: List[str] = Field(default_factory=list)
-    reasons: List[Dict[str, Any]] = Field(default_factory=list)
-    notes: List[str] = Field(default_factory=list)
-    phase: Optional[str] = None
-
-
 class DabanLiveResponse(BaseModel):
-    """盘中雷达。``trading`` 为 False 时数据是最近一次收盘的，页面要如实标注。"""
+    """盘中雷达。``trading`` 为 False 时数据是最近一次收盘的，页面要如实标注。
+
+    ``focus``：「重点」tab（按热点题材分组，组内按总分、再按距涨停排序，每只带进入时刻、成本、初始分 / 实时分与
+    逐项明细）；``limit_board``：「涨停板」tab（龙 1 / 龙 2 置顶）；``score_rules``：计分表；``worldview``：盘中版世界观
+    （边界、推翻信号、改动记录）。2026-11 起不再返回两派的 ``hits`` / ``lanes``（名额与仓位已退役）。
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -165,9 +135,15 @@ class DabanLiveResponse(BaseModel):
     gate_labels: Dict[str, Any] = Field(default_factory=dict)
     realtime_gate: Dict[str, Any] = Field(default_factory=dict)
     stats: Dict[str, Any] = Field(default_factory=dict)
-    hits: List[DabanLiveHit] = Field(default_factory=list)
-    blocked: List[Dict[str, Any]] = Field(default_factory=list)
-    themes: List[Dict[str, Any]] = Field(default_factory=list)
+    focus: Dict[str, Any] = Field(default_factory=dict)
+    limit_board: Dict[str, Any] = Field(default_factory=dict)
+    score_rules: Dict[str, Any] = Field(default_factory=dict)
+    worldview: Optional[Dict[str, Any]] = None
+    # 大盘急拉推荐点（沪深300 30 分钟拉升 ≥0.8 且翻红）；没触发为 None。只是买入时机提示。
+    surge_point: Optional[Dict[str, Any]] = None
+    hot_themes: List[Dict[str, Any]] = Field(default_factory=list)
+    indices: Dict[str, Any] = Field(default_factory=dict)
+    feature_status: Optional[Dict[str, Any]] = None
     events: Dict[str, Any] = Field(default_factory=dict)
     degraded_reasons: List[str] = Field(default_factory=list)
 

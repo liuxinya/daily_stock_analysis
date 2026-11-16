@@ -8,9 +8,18 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
-from sqlalchemy import and_, delete, desc, select
+from sqlalchemy import and_, delete, desc, or_, select
 
-from src.storage import DabanForecast, DabanLiveHit, DabanPick, DabanPoolRow, DabanSnapshot, DatabaseManager
+from src.storage import (
+    DabanForecast,
+    DabanLiveHit,
+    DabanPick,
+    DabanPoolRow,
+    DabanRadarEvent,
+    DabanRecommendation,
+    DabanSnapshot,
+    DatabaseManager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +38,8 @@ class DabanRepository:
     # ------------------------------------------------------------------ 快照
 
     def save_snapshot(self, fields: Dict[str, Any]) -> None:
-        """落一份快照。完整快照不会被同日的回补记录覆盖。"""
+        """落一份快照。收盘后的完整快照不会被同日的回补记录覆盖；只在盘中生成过的那份可以——
+        它的指标是生成那一刻的，回补拿到的是收盘数据（回补只处理今天之前的日期）。"""
         trade_date = str(fields.get("trade_date") or "").strip()
         kind = str(fields.get("kind") or "full")
         with self.db.get_session() as session:
@@ -40,7 +50,7 @@ class DabanRepository:
                 .limit(1)
             ).scalar_one_or_none()
             if existing is not None:
-                if existing.kind == "full" and kind == "backfill":
+                if existing.kind == "full" and not existing.intraday and kind == "backfill":
                     return
                 for key, value in fields.items():
                     if hasattr(existing, key):
@@ -90,15 +100,18 @@ class DabanRepository:
                 ).scalars().all()
             )
 
-    def known_trade_dates(self, dates: Iterable[str]) -> set:
+    def known_trade_dates(self, dates: Iterable[str], *, closed_only: bool = False) -> set:
+        """库里有快照的日期。``closed_only=True`` 时不算「只在盘中生成过」的那些天：那份快照的指标是
+        生成那一刻的，池子也没落库，冷启动回补要把它当作缺失。"""
         wanted = [str(d) for d in dates]
         if not wanted:
             return set()
         with self.db.get_session() as session:
             rows = session.execute(
-                select(DabanSnapshot.trade_date).where(DabanSnapshot.trade_date.in_(wanted))
+                select(DabanSnapshot.trade_date, DabanSnapshot.kind, DabanSnapshot.intraday)
+                .where(DabanSnapshot.trade_date.in_(wanted))
             ).all()
-        return {row[0] for row in rows}
+        return {row[0] for row in rows if not (closed_only and row[1] == "full" and row[2])}
 
     def pool_history_since(self, since: str, pool: str = "zt") -> List[tuple]:
         """``since`` 之后所有日期的池子行，``[(trade_date, rows), ...]`` 按日期正序。"""
@@ -276,6 +289,52 @@ class DabanRepository:
             session.commit()
         return updated
 
+    def reconcile_live_hits(self, trade_date: str, *, zt: List[Dict[str, Any]], zb: List[Dict[str, Any]]) -> int:
+        """按当天收盘的涨停 / 炸板池，给盘中留档的行补「是否封到收盘」、开板次数和真实首封时间。
+
+        用在「盘中留过档、收盘后没生成复盘」的那些天（冷启动回补时）。只填空着的字段，不改已经对过账的行；
+        不新增行。没出现在涨停池里的一律记为没封住（炸板或根本没触板）。
+        """
+        sealed = {str(r.get("code") or ""): r for r in zt or []}
+        broken = {str(r.get("code") or ""): r for r in zb or []}
+        updated = 0
+        with self.db.get_session() as session:
+            rows = session.execute(select(DabanLiveHit).where(DabanLiveHit.trade_date == trade_date)).scalars().all()
+            for row in rows:
+                if row.sealed_close is not None:
+                    continue
+                source = sealed.get(row.code) or broken.get(row.code)
+                row.sealed_close = row.code in sealed
+                if row.origin != "preboard" and source is not None:
+                    if not _valid_hhmmss(row.first_time) and _valid_hhmmss(source.get("first_time")):
+                        row.first_time = str(source.get("first_time"))
+                    if row.open_count is None and source.get("open_num") is not None:
+                        row.open_count = int(source.get("open_num") or 0)
+                updated += 1
+            session.commit()
+        return updated
+
+    def reconcile_stored_live_hits(self, *, before: str) -> List[str]:
+        """``before`` 之前、留档里还有「是否封到收盘」为空的交易日，用库里存的涨停 / 炸板池补上。
+
+        给那些池子已经落库（冷启动回补过）、但盘中留档当时没对账的日子用。只读本地库，不访问上游。
+        返回补过的交易日。
+        """
+        with self.db.get_session() as session:
+            dates = [row[0] for row in session.execute(
+                select(DabanLiveHit.trade_date)
+                .where(and_(DabanLiveHit.trade_date < before, DabanLiveHit.sealed_close.is_(None)))
+                .distinct()
+            ).all()]
+        done: List[str] = []
+        for day in sorted(dates):
+            zt = self.pool_rows(day, "zt")
+            if not zt:
+                continue  # 池子没落库：等冷启动回补那天从上游取
+            self.reconcile_live_hits(day, zt=zt, zb=self.pool_rows(day, "zb"))
+            done.append(day)
+        return done
+
     def pending_live_dates(self) -> List[str]:
         """还有未回填标的的交易日，按时间正序。"""
         with self.db.get_session() as session:
@@ -289,12 +348,13 @@ class DabanRepository:
             rows = session.execute(select(DabanLiveHit).where(DabanLiveHit.trade_date == trade_date)).scalars().all()
             return [_live_dict(row) for row in rows]
 
-    def update_live_outcomes(self, trade_date: str, outcomes: Dict[str, Dict[str, Any]]) -> int:
+    def update_live_outcomes(self, trade_date: str, outcomes: Dict[tuple, Dict[str, Any]]) -> int:
+        """``outcomes`` 以 ``(style, code)`` 为键：两派锁定同一只票时成本不同，各回各的。"""
         updated = 0
         with self.db.get_session() as session:
             rows = session.execute(select(DabanLiveHit).where(DabanLiveHit.trade_date == trade_date)).scalars().all()
             for row in rows:
-                outcome = outcomes.get(row.code)
+                outcome = outcomes.get((row.style, row.code))
                 if outcome is None:
                     continue
                 row.next_open_ret = outcome.get("open_ret")
@@ -356,19 +416,239 @@ class DabanRepository:
             )).scalars().all()
             return [_forecast_dict(row) for row in rows]
 
+    # ------------------------------------------------------------------ 雷达时序留档
+
+    def add_radar_events(self, trade_date: str, events: List[Dict[str, Any]]) -> int:
+        """追加一批雷达事件（只增不改）。``data`` 是 dict，存成 JSON。"""
+        if not events:
+            return 0
+        with self.db.get_session() as session:
+            for event in events:
+                session.add(DabanRadarEvent(
+                    trade_date=trade_date,
+                    at=str(event.get("at") or ""),
+                    kind=str(event.get("kind") or ""),
+                    code=str(event.get("code") or ""),
+                    name=(str(event.get("name") or "")[:64] or None),
+                    theme=(str(event.get("theme") or "")[:64] or None),
+                    price=event.get("price"),
+                    gap_pct=event.get("gap_pct"),
+                    data=json.dumps(event.get("data") or {}, ensure_ascii=False),
+                ))
+            session.commit()
+        return len(events)
+
+    def radar_events(self, trade_date: str, *, code: Optional[str] = None,
+                     kinds: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+        conditions = [DabanRadarEvent.trade_date == trade_date]
+        if code is not None:
+            conditions.append(DabanRadarEvent.code == code)
+        if kinds:
+            conditions.append(DabanRadarEvent.kind.in_(list(kinds)))
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(DabanRadarEvent).where(and_(*conditions)).order_by(DabanRadarEvent.id)
+            ).scalars().all()
+            return [_radar_dict(row) for row in rows]
+
+    def radar_state(self, trade_date: str) -> Dict[str, Any]:
+        """当天已经留过的状态，进程重启后接着记：不重复写 ``seen``，状态变化和采样节奏也接得上。
+
+        返回 ``{"tracked": {code: {"status"}}, "cold": set, "sample_last", "theme_last", "market_last"}``，
+        与 ``src.services.daban.radar_log`` 的进程内状态同构。
+        """
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(DabanRadarEvent.kind, DabanRadarEvent.code, DabanRadarEvent.at, DabanRadarEvent.data)
+                .where(DabanRadarEvent.trade_date == trade_date)
+                .order_by(DabanRadarEvent.id)
+            ).all()
+        tracked: Dict[str, Dict[str, Any]] = {}
+        cold: set = set()
+        last = {"sample": "", "theme": "", "market": "", "auction": ""}
+        for kind, code, at, data in rows:
+            if kind in last:
+                last[kind] = max(last[kind], at or "")
+                if kind != "sample":
+                    continue
+            if kind not in ("seen", "seal", "reseal", "open"):
+                continue
+            if kind == "seen":
+                try:
+                    payload = json.loads(data or "{}")
+                except (TypeError, ValueError):
+                    payload = {}
+                if payload.get("hot"):
+                    tracked[code] = {"status": payload.get("status") or "candidate"}
+                else:
+                    cold.add(code)
+            elif code in tracked and kind in ("seal", "reseal"):
+                tracked[code]["status"] = "sealed"
+            elif code in tracked and kind == "open":
+                tracked[code]["status"] = "opened"
+        return {"tracked": tracked, "cold": cold, "sample_last": last["sample"],
+                "theme_last": last["theme"], "market_last": last["market"], "auction_last": last["auction"]}
+
+    # ------------------------------------------------------------------ 「重点」推荐
+
+    def add_recommendations(self, trade_date: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """新进入「重点」的票。同一天同一只已有就跳过（一只票一天只记一次，第一次的成本和初始分不改）。返回真正写入的行。"""
+        if not rows:
+            return []
+        inserted: List[Dict[str, Any]] = []
+        with self.db.get_session() as session:
+            existing = {r[0] for r in session.execute(
+                select(DabanRecommendation.code).where(DabanRecommendation.trade_date == trade_date)).all()}
+            for row in rows:
+                code = str(row.get("code") or "")
+                if not code or code in existing:
+                    continue
+                record = {key: row.get(key) for key in _REC_FIELDS if key in row}
+                for key in ("init_detail", "live_detail", "close_detail"):
+                    if isinstance(record.get(key), (dict, list)):
+                        record[key] = json.dumps(record[key], ensure_ascii=False)
+                session.add(DabanRecommendation(trade_date=trade_date, settle_status="pending", **record))
+                existing.add(code)
+                inserted.append(row)
+            session.commit()
+        return inserted
+
+    def update_recommendation_live(self, trade_date: str, updates: Dict[str, Dict[str, Any]], *,
+                                   close: bool = False) -> int:
+        """实时分（``close=True`` 时同时写收盘分）。``updates``：``{code: {live_score, live_detail, flags?}}``。"""
+        if not updates:
+            return 0
+        done = 0
+        with self.db.get_session() as session:
+            rows = session.execute(select(DabanRecommendation).where(and_(
+                DabanRecommendation.trade_date == trade_date, DabanRecommendation.code.in_(list(updates))))).scalars().all()
+            for row in rows:
+                item = updates[row.code]
+                if item.get("live_score") is not None:
+                    row.live_score = int(item["live_score"])
+                if item.get("live_detail") is not None:
+                    row.live_detail = json.dumps(item["live_detail"], ensure_ascii=False)
+                if item.get("flags") is not None:
+                    row.flags = str(item["flags"])[:128]
+                if close:
+                    row.close_score = row.live_score
+                    row.close_detail = row.live_detail
+                done += 1
+            session.commit()
+        return done
+
+    def close_recommendations(self, trade_date: str, *, sealed_codes: set) -> int:
+        """收盘：收盘分 = 最后一次实时分；是否封到收盘按收盘涨停池写。只填空着的。"""
+        done = 0
+        with self.db.get_session() as session:
+            rows = session.execute(select(DabanRecommendation).where(
+                DabanRecommendation.trade_date == trade_date)).scalars().all()
+            for row in rows:
+                if row.close_score is None:
+                    row.close_score = row.live_score if row.live_score is not None else row.init_score
+                    row.close_detail = row.live_detail or row.init_detail
+                if row.sealed_close is None:
+                    row.sealed_close = row.code in sealed_codes
+                done += 1
+            session.commit()
+        return done
+
+    def recommendations(self, trade_date: str) -> List[Dict[str, Any]]:
+        with self.db.get_session() as session:
+            rows = session.execute(select(DabanRecommendation).where(DabanRecommendation.trade_date == trade_date)
+                                   .order_by(DabanRecommendation.id)).scalars().all()
+            return [_rec_dict(row) for row in rows]
+
+    def pending_recommendations(self, *, before_or_on: str) -> List[Dict[str, Any]]:
+        with self.db.get_session() as session:
+            rows = session.execute(select(DabanRecommendation).where(and_(
+                DabanRecommendation.trade_date <= before_or_on,
+                or_(DabanRecommendation.settle_status.is_(None), DabanRecommendation.settle_status != "done"),
+            ))).scalars().all()
+            return [_rec_dict(row) for row in rows]
+
+    def update_recommendation_outcomes(self, updates: Dict[int, Dict[str, Any]]) -> int:
+        if not updates:
+            return 0
+        done = 0
+        with self.db.get_session() as session:
+            rows = session.execute(select(DabanRecommendation).where(
+                DabanRecommendation.id.in_(list(updates)))).scalars().all()
+            for row in rows:
+                item = updates[row.id]
+                for key in ("sealed_close", "h1_ret", "h1_exit_date", "h1_rule", "next_open_ret", "next_close_ret",
+                            "settle_status"):
+                    if key in item:
+                        setattr(row, key, item[key])
+                row.settled_at = datetime.now()
+                done += 1
+            session.commit()
+        return done
+
+    def recent_recommendations(self, *, limit_days: int = 20, before: Optional[str] = None) -> List[Dict[str, Any]]:
+        """最近 ``limit_days`` 个有推荐的交易日（``before`` 不含）。"""
+        with self.db.get_session() as session:
+            query = select(DabanRecommendation.trade_date)
+            if before:
+                query = query.where(DabanRecommendation.trade_date < before)
+            dates = [r[0] for r in session.execute(
+                query.distinct().order_by(desc(DabanRecommendation.trade_date)).limit(max(1, int(limit_days)))).all()]
+            if not dates:
+                return []
+            rows = session.execute(select(DabanRecommendation).where(
+                DabanRecommendation.trade_date.in_(dates))).scalars().all()
+            return [_rec_dict(row) for row in rows]
+
     # ------------------------------------------------------------------ 维护
 
     def apply_retention(self, retention_days: int) -> int:
         cutoff = (datetime.now() - timedelta(days=max(30, int(retention_days)))).strftime("%Y-%m-%d")
         deleted = 0
         with self.db.get_session() as session:
-            for model in (DabanSnapshot, DabanPoolRow, DabanPick, DabanLiveHit):
+            for model in (DabanSnapshot, DabanPoolRow, DabanPick, DabanLiveHit, DabanRadarEvent, DabanRecommendation):
                 result = session.execute(delete(model).where(model.trade_date < cutoff))
                 deleted += int(result.rowcount or 0)
             result = session.execute(delete(DabanForecast).where(DabanForecast.made_on < cutoff))
             deleted += int(result.rowcount or 0)
             session.commit()
         return deleted
+
+
+def _radar_dict(row: DabanRadarEvent) -> Dict[str, Any]:
+    try:
+        data = json.loads(row.data or "{}")
+    except (TypeError, ValueError):
+        data = {}
+    return {
+        "trade_date": row.trade_date, "at": row.at, "kind": row.kind, "code": row.code, "name": row.name,
+        "theme": row.theme, "price": row.price, "gap_pct": row.gap_pct, "data": data,
+    }
+
+
+_REC_FIELDS = (
+    "code", "name", "theme_key", "theme_name", "entered_at", "cost", "entry_status", "entry_gap_pct", "init_score",
+    "live_score", "close_score", "group_key", "observe_key", "flags", "temper_tag", "covered", "init_detail",
+    "live_detail", "close_detail",
+)
+
+
+def _json_or_empty(text: Optional[str]) -> Dict[str, Any]:
+    try:
+        value = json.loads(text or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _rec_dict(row: DabanRecommendation) -> Dict[str, Any]:
+    out = {"id": row.id, "trade_date": row.trade_date}
+    for key in _REC_FIELDS:
+        out[key] = getattr(row, key)
+    for key in ("init_detail", "live_detail", "close_detail"):
+        out[key] = _json_or_empty(out[key])
+    for key in ("sealed_close", "h1_ret", "h1_exit_date", "h1_rule", "next_open_ret", "next_close_ret", "settle_status"):
+        out[key] = getattr(row, key)
+    return out
 
 
 def _pick_dict(row: DabanPick) -> Dict[str, Any]:

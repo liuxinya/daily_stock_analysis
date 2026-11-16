@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""编排层：抓取降级、按交易日覆盖落库、冷启动回补、两派推荐记录与次日复盘。
+"""编排层：抓取降级、按交易日覆盖落库、冷启动回补、短线世界观、次日观察清单、「重点」推荐收盘复盘。
 
 所有上游都打桩在 ``src.services.daban.service`` 模块上（服务层是 ``from ... import`` 直接绑定名字的，
 打在 fetchers 模块上不生效）；数据库用临时 SQLite，模型用返回空串的桩（走规则兜底）。
@@ -77,6 +77,10 @@ def upstream(monkeypatch):
     monkeypatch.setattr(service_mod, "fetch_hot_rank", lambda *, timeout: _env("hot", ranks={"003029": 3}))
     monkeypatch.setattr(service_mod, "fetch_klines", lambda codes, day, *, limit, timeout: _env("klines", rows={}))
     monkeypatch.setattr(service_mod, "fetch_theme_news", lambda names, *, timeout: _env("news", news={}))
+    # 指数与个股新闻不走外网
+    monkeypatch.setattr(service_mod.DabanService, "_indices", staticmethod(lambda: {}))
+    monkeypatch.setattr(service_mod.DabanService, "_stock_news", lambda self, recs, day: {})
+    monkeypatch.setattr(service_mod, "next_trade_date", lambda day, **kw: {"2026-10-19": "2026-10-20"}.get(day, "2026-10-21"))
     return state
 
 
@@ -101,9 +105,10 @@ class TestRefresh:
         payload = svc.refresh(trade_date="2026-10-20")
         assert payload["kind"] == "full" and payload["trade_date"] == "2026-10-20"
         assert payload["metrics"]["max_height"] == 4         # 连板数来自天梯
-        assert set(payload["lanes"]) == {"chen", "kobe"}
-        assert payload["verdict"]["preferred"] in ("chen", "kobe", "both")
-        assert payload["conclusion"]["generated_by"] == "rule_fallback"
+        assert "lanes" not in payload and "verdict" not in payload   # 两条推荐线与打法裁决已退役
+        assert len(payload["worldview"]["dims"]) == 11 and payload["worldview"]["for_date"] == "2026-10-21"
+        assert payload["watchlist"]["items"] and payload["watchlist"]["for_date"] == "2026-10-21"
+        assert payload["conclusion"]["generated_by"] == "rule_fallback" and payload["conclusion"]["big_picture"]["text"]
         assert any(e["code"] == "600178" for e in payload["excluded"])   # 中位股
         # 读侧只读库。
         stored = svc.overview()
@@ -152,127 +157,117 @@ class TestBackfillAndReview:
         # 回补日不是完整复盘，overview 按日期读到的是轻量记录，接口层会当作未生成。
         assert svc.overview("2026-10-19")["kind"] == "backfill"
 
-    def test_previous_picks_are_reviewed_next_day(self, db, upstream):
+    def test_worldview_is_reconciled_the_next_day(self, db, upstream):
         svc = _service()
-        svc.repository.save_picks("2026-10-19", [
-            {"style": "kobe", "code": "603278", "name": "大业股份", "mode": "M3", "action": "trial", "score": 70},
-            {"style": "chen", "code": "002889", "name": "东方嘉盛", "mode": "M1", "action": "trial", "score": 75},
-        ])
+        svc.refresh(trade_date="2026-10-19")
         payload = svc.refresh(trade_date="2026-10-20")
-        review = payload["review"]
-        assert review["kobe"]["limit_up"] == 1                # 大业股份今天涨停
-        assert review["chen"]["avg_change"] == pytest.approx(-6.7)
-        stored = {p["code"]: p for p in svc.repository.picks_for("2026-10-19")}
-        assert stored["603278"]["next_day_limit_up"] is True
-        assert stored["002889"]["next_day_change_pct"] == pytest.approx(-6.7)
-        # 今天的推荐也落库了，明天复盘用。
-        assert svc.repository.picks_for("2026-10-20")
+        check = payload["worldview_check"]
+        assert check and check["for_date"] == "2026-10-20"
+        assert payload["worldview_accuracy"]["days"] >= 1
 
-
-PHASE_WARM = {"available": True, "trade_date": "2026-10-19", "chen_stage": "warm", "chen_label": "回暖期",
-              "kobe_gate": "fall_2", "kobe_label": "主跌第 2 天"}
-
-
-class TestLiveAndForecastTracking:
-    @staticmethod
-    def _allow_all(monkeypatch):
-        """把「前一交易日周期」固定成放行的阶段；这里测的是留档 / 回填链路，不是周期分类。"""
-        from src.services.daban import live as live_mod
-
-        live_mod.clear_cache()
-        monkeypatch.setattr(live_mod.LiveRadarService, "previous_context", lambda self, day: dict(PHASE_WARM))
-
-    def test_close_marks_preboard_seals_and_never_locks_sealed_boards(self, db, upstream, monkeypatch):
-        """收盘只做两件事：给未涨停候选写「最终封没封住」，以及保留盘中锁定的名额。
-
-        已经封板的票不占名额、也不补录——出现时已经买不进去了。
-        """
-        self._allow_all(monkeypatch)
-        svc = _service()
-        svc.repository.upsert_live_hits("2026-10-20", [
-            {"style": "kobe", "code": "603278", "name": "大业股份", "action": "watch", "first_time": "093500",
-             "seen_at": "093500", "limit_price": 12.0, "seen_price": 11.6, "gap_pct": 3.4, "position_pct": 0,
-             "sealed_close": None, "open_count": 0, "theme": "机器人", "phase": "主跌第 2 天", "origin": "preboard"},
-        ], final=False)
-        payload = svc.refresh(trade_date="2026-10-20")
-        rows = svc.repository.live_hits("2026-10-20")
-        assert [r["code"] for r in rows] == ["603278"]
-        assert rows[0]["origin"] == "preboard" and rows[0]["sealed_close"] is True   # 大业股份当天涨停
-        assert payload["live_review"]["calls"] == 0        # 没有已封板被锁成名额
-
-    def test_intraday_lock_is_kept_and_reviewed_from_the_seen_price(self, db, upstream, monkeypatch):
-        from src.services.daban import fetchers
-
-        self._allow_all(monkeypatch)
-        svc = _service()
-        svc.repository.upsert_live_hits("2026-10-20", [
-            {"style": "kobe", "code": "002347", "name": "泰尔股份", "action": "trial", "first_time": "093745",
-             "seen_at": "093800", "limit_price": 6.61, "seen_price": 6.40, "gap_pct": 3.3, "position_pct": 10,
-             "sealed_close": None, "open_count": 0, "theme": "机器人", "phase": "主跌第 2 天", "origin": "live"},
-        ], final=False)
-        svc.refresh(trade_date="2026-10-20")
-        kept = svc.repository.live_hits("2026-10-20")[0]
-        assert kept["origin"] == "live" and kept["position_pct"] == 10 and kept["slot"] == 1
-
-        # 次日：以锁定时的现价 6.40 为成本，而不是打板价 6.61
-        monkeypatch.setattr(fetchers, "next_trade_date", lambda day, **kw: "2026-10-21")
-        monkeypatch.setattr(fetchers, "fetch_klines", lambda codes, day, *, limit, timeout: _env(
-            "klines", rows={c: [{"time": "20261021", "open": 6.4, "high": 6.9, "low": 6.3, "close": 6.72}]
-                            for c in codes}))
-        upstream["zt"]["2026-10-21"] = [zt_row("002889", "东方嘉盛", reason="机器人概念")]
-        svc.refresh(trade_date="2026-10-21")
-        reviewed = [h for h in svc.repository.live_hits("2026-10-20") if h["reviewed"]]
-        assert reviewed and reviewed[0]["next_close_ret"] == pytest.approx((6.72 / 6.40 - 1) * 100, abs=0.05)
-
-    def test_forecasts_are_recorded_for_the_next_trade_date(self, db, upstream, monkeypatch):
-        monkeypatch.setattr(service_mod, "next_trade_date", lambda day, **kw: "2026-10-21")
-        monkeypatch.setattr(service_mod, "build_forecasts", lambda **kw: [
-            {"code": "600999", "name": "候选", "theme": "机器人", "source": "broken"},
-        ])
+    def test_no_picks_are_written(self, db, upstream):
         svc = _service()
         svc.refresh(trade_date="2026-10-20")
-        rows = svc.repository.forecasts_for("2026-10-21")
-        assert [(r["code"], r["source"], r["evaluated"]) for r in rows] == [("600999", "broken", False)]
+        assert svc.repository.picks_for("2026-10-20") == []
 
 
-class TestLockedSlotsAtClose:
-    def test_close_recording_keeps_intraday_slots_and_only_fills_the_rest(self, db, upstream, monkeypatch):
-        """盘中 10:00 前锁定的名额，收盘补录时原样保留；更早触板但盘中没记到的票不会挤掉它。"""
-        from src.services.daban import live as live_mod
+class TestFocusReview:
+    def test_close_scores_seal_and_review(self, db, upstream):
+        """收盘：收盘分 = 最后一次实时分，是否封住按收盘涨停池写；复盘列出逐项归因和分组成绩。"""
+        svc = _service()
+        svc.repository.add_recommendations("2026-10-20", [
+            {"code": "603278", "name": "大业股份", "cost": 10.5, "init_score": 5, "live_score": 0,
+             "entered_at": "100000", "entry_status": "preboard", "group_key": "normal",
+             "init_detail": {"items": [{"key": "open_gap2_5", "points": 5, "label": "高开 2~5%"}]},
+             "live_detail": {"items": []}},
+            {"code": "600999", "name": "没封", "cost": 8.0, "init_score": 0, "live_score": 0, "entered_at": "103000",
+             "entry_status": "opened", "group_key": "observe"},
+        ])
+        payload = svc.refresh(trade_date="2026-10-20")
+        rows = {r["code"]: r for r in svc.repository.recommendations("2026-10-20")}
+        assert rows["603278"]["sealed_close"] is True and rows["603278"]["close_score"] == 0
+        assert rows["600999"]["sealed_close"] is False
+        review = payload["focus_review"]
+        assert review["count"] == 2
+        item = next(i for i in review["items"] if i["code"] == "603278")
+        assert item["attribution"]["diff"] == [{"key": "open_gap2_5", "label": "高开 2~5%", "init": 5, "close": None}]
+        assert review["stats"]["by_group"]["observe"]["n"] == 1
 
-        live_mod.clear_cache()
-        monkeypatch.setattr(live_mod.LiveRadarService, "previous_context", lambda self, day: {
-            "available": True, "trade_date": "2026-10-19", "chen_stage": "retreat", "chen_label": "退潮期",
-            "kobe_gate": "fall_2", "kobe_label": "主跌第 2 天",       # 科比线只有 1 个 25% 的满额名额
+    def test_legacy_live_stats_until_twenty_new_days(self, db, upstream):
+        """旧雷达成绩：新口径没满 20 个交易日时折叠展示，满了就不再给。"""
+        svc = _service()
+        svc.repository.upsert_live_hits("2026-10-16", [{
+            "style": "kobe", "code": "600001", "name": "甲", "action": "trial", "first_time": "", "found_at": "100000",
+            "seen_at": "100001", "limit_price": 11.0, "slot": 1, "sealed_close": True, "origin": "live"}], final=True)
+        svc.repository.update_live_outcomes("2026-10-16", {("kobe", "600001"): {"open_ret": 2.0, "close_ret": -1.0}})
+        payload = svc.refresh(trade_date="2026-10-20")
+        stat = payload["legacy_live_stats"]["kobe"]
+        assert stat["picks"] == 1 and stat["close_mean"] == -1.0 and stat["label"] == "科比线"
+        assert svc._legacy_live_stats("2026-10-20", {"stats": {"all": {"days": 20}}}) == {}
+
+
+class TestMissedCloseDays:
+    """收盘后没生成过复盘的那些天：下一次生成时补上收盘数据。"""
+
+    def test_backfill_replaces_an_intraday_only_snapshot(self, db, upstream, monkeypatch):
+        """前一天只在盘中生成过：那份指标是盘中某一刻的。冷启动回补把它当作缺失，用收盘数据重算并补池子。"""
+        monkeypatch.setattr(service_mod, "recent_trade_dates", lambda end, count: ["2026-10-19"])
+        svc = _service()
+        svc.repository.save_snapshot({
+            "trade_date": "2026-10-19", "kind": "full", "intraday": True, "stage": "ice", "zt_count": 4,
+            "payload": "{}",
         })
-        svc = _service()
-        svc.repository.upsert_live_hits("2026-10-20", [{
-            "style": "kobe", "code": "603626", "name": "科森科技", "action": "actionable", "first_time": "102000",
-            "seen_at": "102005", "limit_price": 22.21, "position_pct": 25, "slot": 1, "sealed_close": None,
-            "open_count": 0, "theme": "机器人", "phase": "主跌第 2 天", "origin": "live",
+        svc.repository.upsert_live_hits("2026-10-19", [{
+            "style": "kobe", "code": "002889", "name": "东方嘉盛", "action": "trial", "first_time": "",
+            "found_at": "100000", "seen_at": "100005", "limit_price": 16.98, "seen_price": 16.79, "slot": 1,
+            "sealed_close": None, "theme": "机器人", "origin": "live",
         }], final=False)
-        payload = svc.refresh(trade_date="2026-10-20")
-        rows = [h for h in svc.repository.live_hits("2026-10-20") if h["style"] == "kobe"]
-        assert [(h["code"], h["slot"], h["origin"]) for h in rows] == [("603626", 1, "live")]
-        assert rows[0]["sealed_close"] is True                     # 收盘写入是否封住
-        assert payload["live_review"]["locked_intraday"] == 1
-
-    def test_close_fills_in_the_real_first_seal_time(self, db, upstream, monkeypatch):
-        """锁定那一刻它还没涨停，首封时间留空；收盘知道真实首封时间（10:20）后补上，添加时间不动。"""
-        from src.services.daban import live as live_mod
-
-        live_mod.clear_cache()
-        monkeypatch.setattr(live_mod.LiveRadarService, "previous_context", lambda self, day: dict(PHASE_WARM))
-        svc = _service()
-        svc.repository.upsert_live_hits("2026-10-20", [{
-            "style": "kobe", "code": "603626", "name": "科森科技", "action": "actionable", "first_time": "",
-            "found_at": "101500", "seen_at": "101530", "limit_price": 22.21, "seen_price": 21.8, "gap_pct": 1.9,
-            "position_pct": 25, "slot": 1, "sealed_close": None, "open_count": 0, "theme": "机器人",
-            "phase": "主跌第 2 天", "origin": "live",
-        }], final=False)
+        assert svc.repository.known_trade_dates(["2026-10-19"], closed_only=True) == set()
+        svc.rules["backfill_days"] = 1
         svc.refresh(trade_date="2026-10-20")
-        row = next(h for h in svc.repository.live_hits("2026-10-20") if h["code"] == "603626")
-        assert row["first_time"] == "102000" and row["found_at"] == "101500" and row["slot"] == 1
+        row = svc.repository.snapshot_for_trade_date("2026-10-19")
+        assert row.kind == "backfill" and not row.intraday and row.zt_count == 1
+        assert [r["code"] for r in svc.repository.pool_rows("2026-10-19", "zt")] == ["002889"]
+        assert svc.repository.live_hits("2026-10-19")[0]["sealed_close"] is True
+        # 收盘后的完整快照仍然不会被回补覆盖。
+        assert svc.repository.known_trade_dates(["2026-10-20"], closed_only=True) == {"2026-10-20"}
+
+    def test_stored_pools_reconcile_old_live_hits(self, db, upstream):
+        """旧雷达留档（已停写）没对过账：生成时用本地池子补，不访问上游。"""
+        svc = _service()
+        svc.repository.save_pool_rows("2026-10-16", "zt", [zt_row("600001", "封住", first_time="100500")])
+        svc.repository.save_pool_rows("2026-10-16", "zb", [zt_row("600002", "炸了")])
+        svc.repository.upsert_live_hits("2026-10-16", [
+            {"style": "kobe", "code": code, "name": code, "action": "trial", "first_time": "", "found_at": "100000",
+             "seen_at": "100001", "limit_price": 11.0, "slot": slot, "sealed_close": None, "origin": "live"}
+            for slot, code in ((1, "600001"), (2, "600002"))
+        ], final=False)
+        svc.refresh(trade_date="2026-10-20")
+        rows = {r["code"]: r for r in svc.repository.live_hits("2026-10-16")}
+        assert rows["600001"]["sealed_close"] is True and rows["600001"]["first_time"] == "100500"
+        assert rows["600002"]["sealed_close"] is False
+
+
+def test_radar_events_round_trip_and_retention(db):
+    from src.repositories.daban_repo import DabanRepository
+
+    repo = DabanRepository()
+    repo.add_radar_events("2026-10-20", [
+        {"at": "093500", "kind": "seen", "code": "600001", "name": "甲", "theme": "机器人", "price": 10.0,
+         "gap_pct": 4.5, "data": {"hot": True, "status": "candidate"}},
+        {"at": "093600", "kind": "seen", "code": "600002", "data": {"hot": False}},
+        {"at": "094000", "kind": "seal", "code": "600001", "data": {"first_time": "094000"}},
+        {"at": "094000", "kind": "market", "data": {"zt_count": 12}},
+    ])
+    events = repo.radar_events("2026-10-20", code="600001")
+    assert [e["kind"] for e in events] == ["seen", "seal"] and events[0]["data"]["hot"] is True
+    state = repo.radar_state("2026-10-20")
+    assert state["tracked"] == {"600001": {"status": "sealed"}} and state["cold"] == {"600002"}
+    assert state["market_last"] == "094000" and state["sample_last"] == ""
+    # 保留策略按「今天往前 N 天」算，用一个足够早的日期验证会被清掉。
+    repo.add_radar_events("2020-01-06", [{"at": "093500", "kind": "market", "data": {}}])
+    repo.apply_retention(30)
+    assert repo.radar_events("2020-01-06") == []
 
 
 def test_existing_live_hit_table_gets_new_columns(tmp_path, monkeypatch):
@@ -305,3 +300,21 @@ def test_existing_live_hit_table_gets_new_columns(tmp_path, monkeypatch):
     finally:
         DatabaseManager.reset_instance()
         Config._instance = None
+
+class TestOverviewMergesSettlement:
+    def test_stored_review_shows_the_latest_settlement(self, db, upstream):
+        """快照里冻结的「待结算」不会一直挂着：读 overview 时用推荐表的最新状态覆盖。"""
+        svc = _service()
+        svc.repository.add_recommendations("2026-10-20", [{
+            "code": "600300", "name": "已结算", "cost": 10.0, "init_score": 5, "live_score": 5,
+            "entry_status": "preboard", "group_key": "normal"}])
+        payload = svc.refresh(trade_date="2026-10-20")
+        item = next(i for i in payload["focus_review"]["items"] if i["code"] == "600300")
+        assert item["settle_status"] == "pending"          # 生成那一刻还没结算
+        svc.repository.update_recommendation_outcomes({
+            rec["id"]: {"h1_ret": 3.2, "settle_status": "done", "h1_rule": "unsealed_open", "next_open_ret": 3.2,
+                        "next_close_ret": 1.0, "sealed_close": False}
+            for rec in svc.repository.recommendations("2026-10-20") if rec["code"] == "600300"})
+        stored = svc.overview("2026-10-20")
+        merged = next(i for i in stored["focus_review"]["items"] if i["code"] == "600300")
+        assert merged["settle_status"] == "done" and merged["h1_ret"] == 3.2

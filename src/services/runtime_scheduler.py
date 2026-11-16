@@ -280,6 +280,7 @@ class RuntimeSchedulerService:
         self._scheduler: Optional[Scheduler] = None
         self._thread: Optional[threading.Thread] = None
         self._enabled = False
+        self._background_task_names: List[str] = []
         self._last_run_at: Optional[str] = None
         self._last_success_at: Optional[str] = None
         self._last_error: Optional[str] = None
@@ -504,6 +505,26 @@ class RuntimeSchedulerService:
     def _is_schedule_enabled(self, config: Config) -> bool:
         return self._force_enabled or bool(getattr(config, "schedule_enabled", False))
 
+    def _standalone_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
+        """不依赖 ``SCHEDULE_ENABLED`` 的后台任务。
+
+        「我是打板王」的盘后生成与盘中雷达轮询各有自己的开关（``DABAN_AUTO_GENERATE`` /
+        ``DABAN_LIVE_PUSH_ENABLED``，默认都关）。只为了它们去打开 ``SCHEDULE_ENABLED`` 会顺带启用
+        主流程的每日个股分析与通知，所以这两个任务在定时分析关闭时也照常注册。
+        """
+        if self._background_tasks_provider is not None:
+            return []
+        # 先看开关再导入：打板王包的导入会拉起 data_provider / pandas，两个开关都关时不必付这个代价。
+        if not bool(getattr(config, "daban_enabled", True)) or not (
+            bool(getattr(config, "daban_auto_generate", False))
+            or bool(getattr(config, "daban_live_push_enabled", False))
+        ):
+            return []
+        return [
+            *self._current_daban_background_tasks(config),
+            *self._current_daban_live_background_tasks(config),
+        ]
+
     def _current_background_tasks(self, config: Config) -> List[Dict[str, Any]]:
         if self._background_tasks_provider is not None:
             return self._background_tasks_provider(config)
@@ -706,10 +727,16 @@ class RuntimeSchedulerService:
                 self.stop()
                 return
             config = self._config_provider()
-            if not self._is_schedule_enabled(config):
+            schedule_on = self._is_schedule_enabled(config)
+            # 定时分析关闭时只注册不依赖它的后台任务（见 _standalone_background_tasks）；一个都没有就不起调度线程。
+            background_tasks = (
+                self._current_background_tasks(config)
+                if schedule_on
+                else self._standalone_background_tasks(config)
+            )
+            if not schedule_on and not background_tasks:
                 self.stop()
                 return
-            background_tasks = self._current_background_tasks(config)
             self.stop()
             with self._analysis_process_lock:
                 generation = self._analysis_generation
@@ -727,12 +754,11 @@ class RuntimeSchedulerService:
                 schedule_times_provider=self._current_times,
                 register_signals=False,
             )
-            if run_immediately and self._run_immediately_in_background:
-                scheduler.set_daily_task(scheduled_analysis, run_immediately=False)
-            else:
+            if schedule_on:
+                # 需要后台立即执行时，由下方单独的线程跑，daily task 自己不立即执行。
                 scheduler.set_daily_task(
                     scheduled_analysis,
-                    run_immediately=run_immediately,
+                    run_immediately=run_immediately and not self._run_immediately_in_background,
                 )
             for entry in background_tasks:
                 scheduler.add_background_task(
@@ -741,7 +767,7 @@ class RuntimeSchedulerService:
                     run_immediately=entry.get("run_immediately", False),
                     name=entry.get("name"),
                 )
-            if run_immediately and self._run_immediately_in_background:
+            if schedule_on and run_immediately and self._run_immediately_in_background:
                 self._run_in_background_thread(scheduled_analysis)
             thread = threading.Thread(
                 target=scheduler.run,
@@ -750,7 +776,9 @@ class RuntimeSchedulerService:
             )
             self._scheduler = scheduler
             self._thread = thread
-            self._enabled = True
+            # ``enabled`` 只表示「每日定时分析」开着；只跑后台任务时为 False，见 status() 的 background_tasks。
+            self._enabled = schedule_on
+            self._background_task_names = [str(entry.get("name") or "") for entry in background_tasks]
             thread.start()
 
     def stop(self) -> None:
@@ -766,6 +794,7 @@ class RuntimeSchedulerService:
             self._scheduler = None
             self._thread = None
             self._enabled = False
+            self._background_task_names = []
 
     def reconcile_from_config(
         self,
@@ -778,11 +807,8 @@ class RuntimeSchedulerService:
         if not self._owns_schedule:
             self.stop()
             return
-        config = self._config_provider()
-        if self._is_schedule_enabled(config):
-            self.start(run_immediately=run_immediately)
-        else:
-            self.stop()
+        # start() 自己判断：定时分析开着就全量启动；关着但有独立后台任务就只跑后台任务；都没有就停。
+        self.start(run_immediately=run_immediately)
 
     def run_now(self) -> Dict[str, Any]:
         if not self._start_analysis_watchdog():
@@ -809,6 +835,8 @@ class RuntimeSchedulerService:
         running = self._run_lock.locked()
         return {
             "enabled": self._enabled,
+            # 当前调度线程里注册的后台任务名；定时分析关闭但打板王任务开着时，enabled 为 False 而这里非空。
+            "background_tasks": list(self._background_task_names) if self._scheduler is not None else [],
             "running": running,
             "schedule_times": schedule_times,
             "next_run_at": next_run,

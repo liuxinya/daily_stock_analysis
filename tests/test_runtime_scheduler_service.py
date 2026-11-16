@@ -20,6 +20,11 @@ from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+# 先把打板王模块（连带 pandas / numpy）导进来：下面不少用例用 ``patch.dict(sys.modules, ...)``，退出时会删掉
+# 期间新导入的模块；numpy 被删后不能在同一进程里再导入一次，单独跑本文件时后面的用例会全部失败。
+import src.services.daban.live  # noqa: F401,E402
+import src.services.daban.push  # noqa: F401,E402
+
 from src.services.runtime_scheduler import (
     CLI_SCHEDULER_OWNER_ENV,
     DEFAULT_RUNTIME_SCHEDULER_TIMEOUT_SECONDS,
@@ -809,6 +814,79 @@ class RuntimeSchedulerServiceTestCase(unittest.TestCase):
         self.assertIs(first_task["task"], third_task["task"])
         self.assertEqual(second_task["interval_seconds"], 11 * 60)
         self.assertEqual(third_task["interval_seconds"], 11 * 60)
+
+    def test_daban_tasks_run_without_schedule_enabled(self) -> None:
+        """打板王的盘后生成 / 雷达轮询有自己的开关，不需要打开 SCHEDULE_ENABLED（那会顺带启用每日个股分析）。"""
+        schedulers = []
+
+        class _FakeScheduler:
+            def __init__(self, **kwargs):
+                self.background_tasks = []
+                self.daily_task = None
+                schedulers.append(self)
+
+            def set_daily_task(self, task, run_immediately: bool) -> None:
+                self.daily_task = task
+
+            def add_background_task(self, task, interval_seconds, run_immediately, name=None) -> None:
+                self.background_tasks.append(name)
+
+            def run(self) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+            @property
+            def schedule(self):
+                class _Namespace:
+                    @staticmethod
+                    def get_jobs():
+                        return []
+
+                return _Namespace
+
+        config = SimpleNamespace(
+            schedule_enabled=False, schedule_time="18:00", schedule_times=["18:00"],
+            daban_enabled=True, daban_auto_generate=True, daban_live_enabled=True, daban_live_push_enabled=False,
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._reload_config = lambda: config
+
+        with patch("src.services.runtime_scheduler.Scheduler", _FakeScheduler), patch(
+            "src.services.runtime_scheduler.threading.Thread", _NoopThread,
+        ):
+            service.reconcile_from_config(run_immediately=True)
+            scheduler = schedulers[-1]
+            self.assertIsNone(scheduler.daily_task)           # 每日分析没有注册
+            self.assertEqual(sorted(scheduler.background_tasks), ["daban_king_live", "daban_king_postmarket"])
+            status = service.status()
+            self.assertFalse(status["enabled"])
+            self.assertEqual(sorted(status["background_tasks"]), ["daban_king_live", "daban_king_postmarket"])
+
+            # 两个开关都关掉：调度线程停掉。
+            config.daban_auto_generate = False
+            service.reconcile_from_config()
+            self.assertIsNone(service._scheduler)
+            self.assertEqual(service.status()["background_tasks"], [])
+
+            # 打开定时分析：每日分析与打板王任务一起注册（打板王任务此时因开关关闭不注册）。
+            config.schedule_enabled = True
+            service.reconcile_from_config()
+            self.assertIsNotNone(schedulers[-1].daily_task)
+            self.assertTrue(service.status()["enabled"])
+
+    def test_nothing_starts_when_schedule_and_daban_tasks_are_off(self) -> None:
+        config = SimpleNamespace(
+            schedule_enabled=False, schedule_time="18:00", schedule_times=["18:00"],
+            daban_enabled=True, daban_auto_generate=False, daban_live_enabled=True, daban_live_push_enabled=False,
+        )
+        service = RuntimeSchedulerService(config_provider=lambda: config)
+        service._reload_config = lambda: config
+        with patch("src.services.runtime_scheduler.threading.Thread", _NoopThread):
+            service.reconcile_from_config()
+        self.assertIsNone(service._scheduler)
+        self.assertFalse(service.status()["enabled"])
 
     def test_force_enabled_survives_time_reconcile_until_explicit_enabled_update(self) -> None:
         fake_schedule = _FakeScheduleModule()

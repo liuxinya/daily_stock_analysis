@@ -222,3 +222,181 @@ export type IndustryFundsHistoryItem = {
   etfDelta: number | null;
   createdAt: string | null;
 };
+
+/** 资金流向的日期 tab：最近 N 个交易日，has_overview 表示那天有没有「总览」快照。 */
+export type IndustryFundsFlowDate = { date: string; hasOverview: boolean };
+
+export type IndustryFundsFlowDates = { days: IndustryFundsFlowDate[]; today: string };
+
+/** 汪汪队：单只宽基 ETF 在某个交易日的份额变动与成交额。单位：份/亿元（amount 已折算成亿元）。 */
+export type NationalTeamEtf = {
+  code: string;
+  name: string;
+  shares: number | null;
+  deltaShares: number | null;
+  deltaAmount: number | null;
+  turnover: number | null;
+  turnoverRatio: number | null;
+};
+
+export type NationalTeamDay = {
+  date: string;
+  /** 当日宽基 ETF 份额净申购（亿份）；该日沪市份额还没更新时为 null，不是 0 */
+  netShares: number | null;
+  /** 估算净流入（亿元）= 份额净申购 × 当日收盘价 */
+  netAmount: number | null;
+  etfCount: number;
+  turnover: number | null;
+  turnoverRatio: number | null;
+  /** 该日沪市份额未取到（盘中 / 节假日上游还没更新） */
+  sseMissing?: boolean;
+  etfs: NationalTeamEtf[];
+};
+
+export type NationalTeamFlow = {
+  days: NationalTeamDay[];
+  series: { date: string; netShares: number | null; netAmount: number | null; turnoverRatio: number | null }[];
+  inflowStreak: number;
+  asOf: string;
+  baseDate?: string;
+  coverage?: { sse?: string; szse?: string };
+  degraded: boolean;
+  degradedReason: string;
+  szse?: { date: string | null; etfs: { code: string; name: string; shares: number | null }[] };
+  szseNote?: string;
+};
+
+/** 龙虎榜机构席位净买：单只个股在某天的机构买卖。单位：亿元。 */
+export type InstitutionStock = {
+  code: string;
+  name: string;
+  close: number | null;
+  changePct: number | null;
+  buyerCount: number | null;
+  sellerCount: number | null;
+  buy: number | null;
+  sell: number | null;
+  net: number | null;
+  /** 机构净买额占总成交额比（%） */
+  netRatio: number | null;
+  turnoverRate: number | null;
+  reason: string;
+};
+
+export type InstitutionDay = {
+  date: string;
+  net: number | null;
+  buy: number | null;
+  sell: number | null;
+  count: number;
+  /** 该日龙虎榜还没披露（收盘后才发布） */
+  pending?: boolean;
+  stocks: InstitutionStock[];
+};
+
+export type InstitutionFlow = {
+  days: InstitutionDay[];
+  series: { date: string; net: number | null; count: number }[];
+  asOf: string;
+  degraded: boolean;
+  degradedReason: string;
+};
+
+export type IndustryFundsFlows = {
+  days: string[];
+  nationalTeam: NationalTeamFlow;
+  institutions: InstitutionFlow;
+  generatedAt: string;
+  durationMs: number;
+};
+
+/** 游资席位矩阵：列 = 营业部席位，行 = 股票，格子里是该席位当天的买卖额（亿元）。 */
+export type HotMoneySeat = {
+  code: string;
+  name: string;
+  /** 压短后的列头名（营业部短名） */
+  short: string;
+  /** 人工整理的游资昵称；为空时列头显示营业部短名 */
+  alias?: string | null;
+  /** 昵称的核对依据（悬停时展示，方便判断是否过期） */
+  aliasSource?: string;
+  /** 这一列/这条席位背后的营业部代码（同昵称合并时会有多个） */
+  codes?: string[];
+  buy: number | null;
+  sell: number | null;
+  net: number | null;
+  days: number;
+};
+
+export type HotMoneyCell = { buy: number; sell: number; net: number };
+
+export type HotMoneyRow = {
+  code: string;
+  name: string;
+  buy: number;
+  sell: number;
+  net: number;
+  /** 该票当天涨跌幅（%），来自龙虎榜明细；取不到为 null */
+  changePct?: number | null;
+  /** 席位代码 → 该席位在这只票上的买卖 */
+  cells: Record<string, HotMoneyCell>;
+};
+
+export type HotMoneyDay = { date: string; rows: HotMoneyRow[]; total: number };
+
+/** 逐日的游资参与度与龙虎榜结构（结论表用）。席位/买卖是游资口径，结构是全龙虎榜口径。 */
+export type HotMoneyDaily = {
+  date: string;
+  /** 当天有买入记录的营业部席位数（剔除通道 / 机构专用） */
+  seats: number;
+  /** 营业部口径的买入 / 卖出 / 净买（亿元） */
+  buy: number | null;
+  sell: number | null;
+  net: number | null;
+  /** 净买 / 买入 */
+  netRatio: number | null;
+  /** 以下为**全龙虎榜**口径（含机构专用与沪深股通），不是游资口径 */
+  listed: number;
+  upShare: number | null;
+  upBuyShare: number | null;
+  downShare: number | null;
+  downBuyShare: number | null;
+  limitShare: number | null;
+};
+
+export type HotMoneyVerdict = { text: string; tags: string[] };
+
+export type IndustryFundsHotMoney = {
+  days: string[];
+  /** 矩阵的列（按「人名昵称 > 街道昵称 > 未识别」排序，最多 20 个） */
+  seats: HotMoneySeat[];
+  /** 「游资席位」区展示的全部席位（含未进列的），默认收起成两行 */
+  allSeats?: HotMoneySeat[];
+  dates: HotMoneyDay[];
+  daily: HotMoneyDaily[];
+  verdict: HotMoneyVerdict;
+  marketNote?: string;
+  rowLimit: number;
+  degraded: boolean;
+  degradedReason: string;
+  coverage: string;
+  /** 列头昵称是人工整理的说明 */
+  aliasNote?: string;
+};
+
+/** 某个游资席位（或一个昵称下的多家营业部）某天的逐股买卖，用于席位悬停气泡。 */
+export type HotMoneySeatStock = {
+  code: string;
+  name: string;
+  buy: number;
+  sell: number;
+  net: number;
+  changePct?: number | null;
+};
+
+export type HotMoneySeatDetail = {
+  date: string;
+  stocks: HotMoneySeatStock[];
+  degraded: boolean;
+  degradedReason: string;
+};

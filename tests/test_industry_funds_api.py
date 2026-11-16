@@ -54,7 +54,10 @@ class _StubService:
         # 给一个 Event 就能把 refresh 挂住，用于测试"任务仍在进行中"的分支。
         self._gate = gate
 
-    def overview(self):
+    def overview(self, *, trade_date=None):
+        # 指定历史日期时只有当天有快照，模拟「那天的快照不存在」。
+        if trade_date and trade_date != "2026-10-16":
+            return None
         return self._payload
 
     def history(self, *, limit=30):
@@ -127,6 +130,14 @@ class TestOverview:
         assert body["cached"] is True
         # 免责声明必须随载荷一起下发，前端不能自己硬编码一份。
         assert body["disclaimers"]["investment"]
+
+    def test_a_specific_trade_date_reads_that_days_snapshot(self, client, endpoint_module, monkeypatch):
+        monkeypatch.setattr(
+            endpoint_module, "IndustryFundsService", lambda: _StubService(_stub_overview())
+        )
+        assert client.get(f"{BASE}/overview", params={"trade_date": "2026-10-16"}).status_code == 200
+        # 没有那天的快照时 404，前端据此提示「这一天没有总览」
+        assert client.get(f"{BASE}/overview", params={"trade_date": "2026-10-15"}).status_code == 404
 
     def test_history_returns_an_items_array(self, client, endpoint_module, monkeypatch):
         monkeypatch.setattr(
@@ -248,3 +259,96 @@ class TestPush:
         body = response.json()
         assert body["skipped"] is True
         assert "刷新" in body["message"]
+
+class TestFlowEndpoints:
+    """资金流向两个 tab 的数据接口：日期 tab + 两周序列。"""
+
+    def test_flow_dates_lists_trading_days(self, client, monkeypatch):
+        from src.services.industry_funds import flows
+
+        monkeypatch.setattr(flows, "flow_dates", lambda days: {
+            "days": [{"date": "2026-11-13", "has_overview": True}, {"date": "2026-11-16", "has_overview": False}],
+            "today": "2026-11-16",
+        })
+        response = client.get(f"{BASE}/flow-dates", params={"days": 10})
+        assert response.status_code == 200
+        body = response.json()
+        assert [d["date"] for d in body["days"]] == ["2026-11-13", "2026-11-16"]
+        assert body["days"][0]["has_overview"] is True and body["days"][1]["has_overview"] is False
+
+    def test_flows_returns_both_modules(self, client, monkeypatch):
+        from src.services.industry_funds import flows
+
+        monkeypatch.setattr(flows, "flow_series", lambda days: {
+            "days": ["2026-11-13", "2026-11-16"],
+            "national_team": {"series": [{"date": "2026-11-13", "net_shares": -17.3}], "inflow_streak": 0,
+                              "degraded": False, "degraded_reason": ""},
+            "institutions": {"series": [{"date": "2026-11-13", "net": -8.65, "count": 38}], "degraded": False,
+                             "degraded_reason": ""},
+            "generated_at": "2026-11-16T13:40:00",
+            "duration_ms": 7000,
+        })
+        response = client.get(f"{BASE}/flows", params={"days": 10})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["days"] == ["2026-11-13", "2026-11-16"]
+        assert body["national_team"]["series"][0]["net_shares"] == -17.3
+        assert body["institutions"]["series"][0]["net"] == -8.65
+
+    def test_days_out_of_range_is_rejected(self, client):
+        assert client.get(f"{BASE}/flows", params={"days": 1}).status_code == 422
+        assert client.get(f"{BASE}/flows", params={"days": 99}).status_code == 422
+
+    def test_hot_money_returns_a_seat_matrix(self, client, monkeypatch):
+        from src.services.industry_funds import hot_money
+
+        monkeypatch.setattr(hot_money, "hot_money", lambda days, seats: {
+            "days": ["2026-11-13"], "seats": [{"code": "S1", "name": "某营业部", "short": "某", "net": 2.0, "buy": 3.0,
+                                               "sell": 1.0, "days": 1}],
+            "dates": [{"date": "2026-11-13", "total": 1, "rows": [{"code": "600001", "name": "甲", "buy": 3.0,
+                                                                    "sell": 1.0, "net": 2.0,
+                                                                    "cells": {"S1": {"buy": 3.0, "sell": 1.0, "net": 2.0}}}]}],
+            "row_limit": 60, "degraded": False, "degraded_reason": "", "coverage": "龙虎榜上榜个股",
+        })
+        response = client.get(f"{BASE}/hot-money", params={"days": 10, "seats": 10})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["seats"][0]["code"] == "S1"
+        assert body["dates"][0]["rows"][0]["cells"]["S1"]["net"] == 2.0
+
+    def test_hot_money_seat_count_is_bounded(self, client):
+        assert client.get(f"{BASE}/hot-money", params={"seats": 2}).status_code == 422
+        assert client.get(f"{BASE}/hot-money", params={"seats": 50}).status_code == 422
+
+    def test_new_endpoints_respect_the_module_switch(self, client, monkeypatch):
+        """INDUSTRY_FUNDS_ENABLED=false 时整组接口一起不可用，新接口不能留后门。"""
+        from src.config import get_config
+
+        config = get_config()
+        monkeypatch.setattr(config, "industry_funds_enabled", False)
+        for path in ("/flows", "/flow-dates", "/hot-money"):
+            response = client.get(f"{BASE}{path}")
+            assert response.status_code == 404
+            assert response.json()["error"] == "not_enabled"
+
+
+
+class TestHotMoneySeatEndpoint:
+    def test_returns_one_seat_day_detail(self, client, monkeypatch):
+        from src.services.industry_funds import hot_money
+
+        monkeypatch.setattr(hot_money, "seat_day_detail", lambda codes, day, timeout=20: {
+            "date": day, "stocks": [{"code": "600001", "name": "甲", "buy": 1.0, "sell": 0.2, "net": 0.8,
+                                     "change_pct": 9.9}],
+            "degraded": False, "degraded_reason": "",
+        })
+        response = client.get(f"{BASE}/hot-money/seat", params={"codes": "10025080", "date": "2026-11-16"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["date"] == "2026-11-16" and body["stocks"][0]["net"] == 0.8
+
+    def test_rejects_a_bad_date_or_empty_codes(self, client):
+        assert client.get(f"{BASE}/hot-money/seat",
+                          params={"codes": "10025080", "date": "2026/11/16"}).status_code == 400
+        assert client.get(f"{BASE}/hot-money/seat",
+                          params={"codes": " ", "date": "2026-11-16"}).status_code == 400

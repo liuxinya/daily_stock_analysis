@@ -11,11 +11,10 @@ import re
 
 import pytest
 
-from src.services.daban import constants
 from src.services.daban.principles import PRINCIPLES
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RULE_FILES = ("patterns.py", "scoring.py", "styles.py", "constants.py", "analyzer.py")
+RULE_FILES = ("patterns.py", "scoring.py", "constants.py", "analyzer.py", "worldview.py", "live.py")
 _ID = re.compile(r'"([KC]\d{2})"')
 
 
@@ -48,9 +47,3 @@ def test_quotes_are_verbatim(author, filename):
             continue
         for segment in item["quote"].split("……"):
             assert re.sub(r"\s+", "", segment.strip("。；，")) in text, f"{pid} 摘句不是原文：{segment}"
-
-
-def test_chen_gates_never_enable_catch_up_or_sub_new():
-    gates = constants.DEFAULT_RULES["gates"]["chen"]
-    assert all(v is None for v in gates["M3"].values())
-    assert all(v is None for v in gates["M7"].values())

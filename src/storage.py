@@ -588,6 +588,83 @@ class DabanForecast(Base):
     )
 
 
+class DabanRadarEvent(Base):
+    """盘中雷达的时序留档：**所有**候选的出现、定时采样、封板 / 炸板，加上题材与大盘的定时快照。
+
+    用途是事后验证「推荐那一刻能看到的盘中信息」有没有预测力（涨速、换手、扫板、题材实时封板、龙头状态、
+    大盘指数……日线回测测不到）。只追加不修改；没被推荐的候选也要记，否则又是幸存者偏差。
+
+    ``kind``：``seen``（当天第一次进入候选）/ ``sample``（每 5 分钟一次）/ ``seal`` / ``open`` / ``reseal``
+    （状态变化）/ ``theme``（热点题材快照，``code`` 为空）/ ``market``（大盘快照，``code`` 为空）。
+    各类型的具体字段放在 ``data``（JSON），见 ``src/services/daban/radar_log.py``。
+    """
+
+    __tablename__ = 'daban_radar_events'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String(16), nullable=False, index=True)
+    at = Column(String(8), nullable=False)  # HHMMSS
+    kind = Column(String(12), nullable=False)
+    code = Column(String(16), nullable=False, default="")
+    name = Column(String(64))
+    theme = Column(String(64))
+    price = Column(Float)
+    gap_pct = Column(Float)  # 距涨停价的百分点
+    data = Column(Text)
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index('ix_daban_radar_event_date_code', 'trade_date', 'code'),
+    )
+
+
+class DabanRecommendation(Base):
+    """盘中「重点」推荐：一只票一天一行，第一次进入「重点」那一刻写入，之后只更新实时分、收盘分和成绩。
+
+    ``cost`` 是进入那一刻的现价（用户当时能买到的价）；``init_score`` 与 ``init_detail``（各计分项、格子、世界观
+    结论、当时的行情）进入后不再改，复盘「不前视」就靠它。分数变动记在 ``daban_radar_events``（``kind=score``）。
+    成绩：``h1_ret`` 主口径（见 ``rec_features.exit_returns``），``next_open_ret`` / ``next_close_ret`` 对照；
+    ``settle_status``：pending（还没到卖点）/ holding（封住后续板持有中）/ done。
+    """
+
+    __tablename__ = 'daban_recommendations'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(String(16), nullable=False, index=True)
+    code = Column(String(16), nullable=False)
+    name = Column(String(64))
+    theme_key = Column(String(64))
+    theme_name = Column(String(64))
+    entered_at = Column(String(8))
+    cost = Column(Float)
+    entry_status = Column(String(12))       # preboard = 没封板时进入；opened = 炸板后进入
+    entry_gap_pct = Column(Float)
+    init_score = Column(Integer)
+    live_score = Column(Integer)
+    close_score = Column(Integer)
+    group_key = Column(String(16))          # normal / observe（一进二观察期）
+    observe_key = Column(String(32))
+    flags = Column(String(128))             # downgraded / uncovered / opened_entry / node_day / override
+    temper_tag = Column(String(12))
+    covered = Column(Boolean)
+    init_detail = Column(Text)
+    live_detail = Column(Text)
+    close_detail = Column(Text)
+    sealed_close = Column(Boolean)
+    h1_ret = Column(Float)
+    h1_exit_date = Column(String(16))
+    h1_rule = Column(String(64))
+    next_open_ret = Column(Float)
+    next_close_ret = Column(Float)
+    settle_status = Column(String(12), default='pending')
+    settled_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index('ix_daban_rec_date_code', 'trade_date', 'code', unique=True),
+    )
+
+
 class FundamentalSnapshot(Base):
     """
     基本面上下文快照（P0 write-only）。

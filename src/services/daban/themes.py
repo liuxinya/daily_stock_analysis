@@ -38,6 +38,13 @@ def normalize_tag(tag: str) -> str:
     return text
 
 
+def related_tags(a: Iterable[str], b: Iterable[str]) -> bool:
+    """题材名 / 标签是否相关：两边都先去掉「概念 / 板块 / 产业链」后缀，再看是否互相包含（至少 2 个字）。"""
+    left = {normalize_tag(x) for x in a if x}
+    right = {normalize_tag(y) for y in b if y}
+    return any(x in y or y in x for x in left for y in right if len(x) >= 2 and len(y) >= 2)
+
+
 def split_reason(reason: str) -> List[str]:
     """涨停原因 → 题材标签（已去掉公司催化类标签）。"""
     tags = []

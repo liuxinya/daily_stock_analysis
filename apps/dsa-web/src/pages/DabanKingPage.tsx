@@ -9,12 +9,12 @@ import {
   BoardLadder,
   CycleDashboard,
   ExcludedList,
+  FocusReviewPanel,
   JobProgress,
   LiveRadar,
-  ReviewPanel,
-  StyleLanes,
-  StyleVerdictPanel,
   ThemeCards,
+  WatchlistPanel,
+  WorldviewPanel,
 } from '../components/daban';
 import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type { DabanHistoryItem, DabanJob, DabanOverview } from '../types/daban';
@@ -34,11 +34,11 @@ const initialTab = (): TabKey => {
 type ActionMessage = { tone: 'info' | 'success' | 'danger'; text: string };
 
 /**
- * 「我是打板王」：按 92科比、陈小群的理念做盘后复盘。
+ * 「我是打板王」：按 92科比、陈小群的理念做盘后复盘与盘中雷达。
  *
- * 页面顺序就是两人的复盘顺序：先定周期（陈小群「周期定位」），再过涨停梯队（科比 #38），
- * 再看主线（「主线识别」），最后才是打法裁决与两条推荐线。生成走后台任务（30~150 秒），
- * 写法与行业资金页一致。
+ * 盘后页面顺序就是两人的复盘顺序：先定周期（陈小群「周期定位」），再过涨停梯队（科比 #38），再看主线，
+ * 然后是两派共用的短线世界观（给明天的边界）、明天的观察清单，最后是「重点」推荐的成绩单（科比 #22 修正自己）。
+ * 盘后不出推荐，次日盘中由雷达统一评分。生成走后台任务（30~150 秒），写法与行业资金页一致。
  */
 const DabanKingPage: React.FC = () => {
   const { t } = useUiLanguage();
@@ -240,11 +240,7 @@ const DabanKingPage: React.FC = () => {
       </div>
 
       {tab === 'live' ? (
-        <LiveRadar
-          principles={overview?.principles ?? {}}
-          styleLabels={overview?.styleLabels ?? { chen: '陈小群打法', kobe: '92科比打法' }}
-          t={t}
-        />
+        <LiveRadar principles={overview?.principles ?? {}} t={t} />
       ) : null}
 
       {tab === 'review' ? loadError ? <ApiErrorAlert error={loadError} className="mb-4" /> : null : null}
@@ -292,20 +288,9 @@ const DabanKingPage: React.FC = () => {
           />
           <BoardLadder ladder={overview.ladder} t={t} />
           <ThemeCards themes={overview.themes} t={t} />
-          <StyleVerdictPanel
-            verdict={overview.verdict}
-            principles={overview.principles}
-            styleLabels={overview.styleLabels}
-            trackRecord={overview.trackRecord}
-            t={t}
-          />
-          <StyleLanes
-            lanes={overview.lanes}
-            preferred={overview.verdict.preferred}
-            principles={overview.principles}
-            t={t}
-          />
-          <ReviewPanel review={overview.review} styleLabels={overview.styleLabels} t={t} />
+          <WorldviewPanel overview={overview} principles={overview.principles} t={t} />
+          <WatchlistPanel watchlist={overview.watchlist} principles={overview.principles} t={t} />
+          <FocusReviewPanel review={overview.focusReview} legacy={overview.legacyLiveStats} t={t} />
           <ExcludedList excluded={overview.excluded} principles={overview.principles} t={t} />
 
           {overview.conclusion?.risks?.length ? (
@@ -321,32 +306,6 @@ const DabanKingPage: React.FC = () => {
               }
             />
           ) : null}
-
-          <SectionCard title={t('dabanKing.liveReview')} subtitle={t('dabanKing.liveReviewSubtitle')}>
-            {overview.liveStats && Object.values(overview.liveStats).some((row) => row?.picks) ? (
-              <ul className="space-y-1 text-xs text-foreground">
-                {(['chen', 'kobe'] as const).map((style) => {
-                  const row = overview.liveStats?.[style];
-                  if (!row?.picks) return null;
-                  return (
-                    <li key={style}>
-                      {t('dabanKing.liveStatLine', {
-                        style: overview.styleLabels?.[style] ?? style,
-                        picks: row.picks,
-                        days: row.days,
-                        sealed: row.sealedRate === null ? '—' : `${(row.sealedRate * 100).toFixed(0)}%`,
-                        open: row.openMean === null ? '—' : `${row.openMean > 0 ? '+' : ''}${row.openMean}%`,
-                        close: row.closeMean === null ? '—' : `${row.closeMean > 0 ? '+' : ''}${row.closeMean}%`,
-                        win: row.winRate === null ? '—' : `${(row.winRate * 100).toFixed(0)}%`,
-                      })}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p className="text-xs text-secondary-text">{t('dabanKing.liveReviewEmpty')}</p>
-            )}
-          </SectionCard>
 
           <SectionCard title={t('dabanKing.forecastReview')} subtitle={t('dabanKing.forecastReviewSubtitle')}>
             {overview.forecastReview?.total ? (

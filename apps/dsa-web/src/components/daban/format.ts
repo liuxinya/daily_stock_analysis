@@ -1,6 +1,6 @@
 /** 「我是打板王」页面的格式化与配色工具（单独成文件：react-refresh 规则不允许组件文件导出非组件）。 */
 
-import type { DabanAction, DabanPrinciple, DabanStyle } from '../../types/daban';
+import type { DabanPrinciple } from '../../types/daban';
 
 export function formatPct(value: number | null | undefined, digits = 1, signed = true): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '—';
@@ -24,6 +24,18 @@ export function formatDelta(value: number | null | undefined, digits = 0): strin
 export function formatTime(value: string | null | undefined): string {
   if (!value || value.length < 4) return '—';
   return `${value.slice(0, 2)}:${value.slice(2, 4)}`;
+}
+
+/** HHMMSS → HH:MM:SS（不足 6 位时 HH:MM）。 */
+export function formatClock(value: string | null | undefined): string {
+  if (!value || value.length < 4) return '—';
+  return `${value.slice(0, 2)}:${value.slice(2, 4)}${value.length >= 6 ? `:${value.slice(4, 6)}` : ''}`;
+}
+
+/** 整数分值带正负号：+5 / -8 / 0。 */
+export function formatSigned(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return `${value > 0 ? '+' : ''}${value}`;
 }
 
 /** A 股配色：涨红跌绿，必须同时带 +/- 号（红绿色弱用户分不清）。 */
@@ -56,34 +68,8 @@ export const STAGE_DOTS: Record<string, string> = {
   retreat: 'bg-success',
 };
 
-export const ACTION_VARIANTS: Record<DabanAction, 'danger' | 'warning' | 'default'> = {
-  actionable: 'danger',
-  trial: 'warning',
-  watch: 'default',
-};
 
-export const STYLE_ACCENTS: Record<DabanStyle, string> = {
-  chen: 'border-cyan/40',
-  kobe: 'border-purple/40',
-};
 
-export const STYLE_TEXT: Record<DabanStyle, string> = {
-  chen: 'text-cyan',
-  kobe: 'text-purple',
-};
-
-export function gradeTone(grade: string): string {
-  switch (grade) {
-    case 'S':
-      return 'text-danger';
-    case 'A':
-      return 'text-warning';
-    case 'B':
-      return 'text-cyan';
-    default:
-      return 'text-secondary-text';
-  }
-}
 
 export function principleLabel(id: string, principles: Record<string, DabanPrinciple>): string {
   const item = principles[id];

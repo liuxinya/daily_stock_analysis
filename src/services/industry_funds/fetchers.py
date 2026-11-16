@@ -635,7 +635,9 @@ def fetch_etf_shares(*, timeout: float, baseline: Optional[Dict[str, Any]] = Non
     szse_agg_today = _aggregate_broad_based(szse_today)
 
     sse_delta = None
-    if sse_agg_base["total_shares"] > 0:
+    if sse_agg_today["count"] > 0 and sse_agg_base["total_shares"] > 0:
+        # 今天没取到沪市数据时不能拿 0 去减基线：那会算出一个「-数千亿份」的假变动，
+        # 恰好落在「国家队大幅赎回」的方向上，比不给数字更误导。
         sse_delta = sse_agg_today["total_shares"] - sse_agg_base["total_shares"]
 
     # 逐只变动只在沪市可算（深市没有历史快照）。
@@ -654,7 +656,10 @@ def fetch_etf_shares(*, timeout: float, baseline: Optional[Dict[str, Any]] = Non
 
     degraded_parts: List[str] = []
     if sse_delta is None:
-        degraded_parts.append("沪市缺少 5 日前快照，无法计算变动")
+        if sse_agg_today["count"] == 0:
+            degraded_parts.append("沪市当日份额未取到（上游返回空），本次不给沪市变动")
+        else:
+            degraded_parts.append("沪市缺少 5 日前快照，无法计算变动")
     if szse_delta is None:
         degraded_parts.append("深市接口不提供历史快照，份额变动需本地累积基线后才有")
 

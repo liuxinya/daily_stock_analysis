@@ -524,6 +524,12 @@ _EM_XUANGU_URL = "https://data.eastmoney.com/dataapi/xuangu/list"
 _EM_XUANGU_STY = "SECUCODE,SECURITY_CODE,SECURITY_NAME_ABBR,CONCEPT,INDUSTRY"
 
 
+def _concept_list(value: Any) -> List[str]:
+    """``CONCEPT`` 2026-11 实测是字符串列表；万一回成逗号分隔的字符串，也拆成概念名（不能按字符迭代）。"""
+    items = value.replace("，", ",").split(",") if isinstance(value, str) else (value or [])
+    return [str(x).strip() for x in items if str(x).strip()]
+
+
 def fetch_em_concepts(codes: List[str], *, timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
     """批量取个股所属概念与行业（东财选股器，一次最多几百只）。
 
@@ -549,7 +555,7 @@ def fetch_em_concepts(codes: List[str], *, timeout: Optional[float] = None) -> D
             out[code] = {
                 "name": str(row.get("SECURITY_NAME_ABBR") or "").strip(),
                 "industry": str(row.get("INDUSTRY") or "").strip(),
-                "concepts": [str(x).strip() for x in (row.get("CONCEPT") or []) if str(x).strip()],
+                "concepts": _concept_list(row.get("CONCEPT")),
             }
     return out
 
@@ -569,8 +575,8 @@ def tencent_symbol(code: str) -> str:
 def parse_tencent_line(line: str) -> Optional[Dict[str, Any]]:
     """``v_sh600000="1~名称~代码~现价~昨收~今开~...";`` → 行情 dict。字段位置 2026-10-20 实测：
 
-    3 现价、4 昨收、5 今开、20 卖一量、30 时间戳（YYYYMMDDHHMMSS）、33 最高、34 最低、
-    38 换手率、44 流通市值（亿）、47 涨停价、48 跌停价。
+    3 现价、4 昨收、5 今开、6 成交量（手）、20 卖一量、30 时间戳（YYYYMMDDHHMMSS）、33 最高、34 最低、
+    37 成交额（万）、38 换手率、44 流通市值（亿）、47 涨停价、48 跌停价、49 量比。
     """
     if "~" not in line:
         return None
@@ -584,6 +590,8 @@ def parse_tencent_line(line: str) -> Optional[Dict[str, Any]]:
             "price": float(fields[3]),
             "prev_close": float(fields[4]),
             "open": float(fields[5]),
+            "volume": _num(fields[6]),
+            "amount": ((_num(fields[37]) or 0) * 1e4) or None,
             "sell1_volume": int(float(fields[20] or 0)),
             "time": fields[30],
             "high": float(fields[33]),
@@ -592,10 +600,10 @@ def parse_tencent_line(line: str) -> Optional[Dict[str, Any]]:
             "circ_mv": (_num(fields[44]) or 0) * 1e8 or None,
             "limit_up": float(fields[47]),
             "limit_down": float(fields[48]),
-            "volume_ratio": _num(fields[49]),
+            "volume_ratio": _num(fields[49]) if len(fields) > 49 else None,
         }
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError, IndexError):
+        return None  # 截断 / 格式异常的单行只丢这一只，不拖垮整批
 
 
 def fetch_tencent_quotes(codes: List[str], *, timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
@@ -618,14 +626,60 @@ def fetch_tencent_quotes(codes: List[str], *, timeout: Optional[float] = None) -
     return out
 
 
+# 盘中雷达记录大盘用的指数（腾讯行情的 symbol 必须带市场前缀：000001 在深市是平安银行）。
+MAIN_INDEX_SYMBOLS = {
+    "sh000001": "上证指数",
+    "sh000300": "沪深300",  # 打板王「大盘急拉推荐点」用它
+    "sz399001": "深证成指",
+    "sz399006": "创业板指",
+    "sh000688": "科创50",
+}
+
+
+def fetch_tencent_index_quotes(
+    symbols: Optional[List[str]] = None, *, timeout: Optional[float] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """指数实时快照（腾讯，无 token），按 symbol 返回 ``{price, prev_close, change_pct, high, low, time}``。
+
+    指数行的涨停 / 跌停价字段为空，不能复用 :func:`parse_tencent_line`。失败抛 ``requests.RequestException``，
+    由调用方决定怎么降级。
+    """
+    wanted = list(symbols or MAIN_INDEX_SYMBOLS)
+    response = requests.get(_TENCENT_URL + ",".join(wanted), headers=_HEADERS,
+                            timeout=float(timeout or _DEFAULT_TIMEOUT))
+    response.raise_for_status()
+    out: Dict[str, Dict[str, Any]] = {}
+    for line in response.text.split(";"):
+        head, _, body = line.strip().partition("=")
+        symbol = head.replace("v_", "", 1).strip()
+        fields = body.strip().strip('"').split("~")
+        if symbol not in wanted or len(fields) < 35:
+            continue
+        price, prev_close = _num(fields[3]), _num(fields[4])
+        if not price or not prev_close:
+            continue
+        out[symbol] = {
+            "name": MAIN_INDEX_SYMBOLS.get(symbol) or fields[1],
+            "price": price,
+            "prev_close": prev_close,
+            "change_pct": round((price / prev_close - 1) * 100, 3),
+            "high": _num(fields[33]),
+            "low": _num(fields[34]),
+            "time": fields[30],
+        }
+    return out
+
+
 __all__ = [
     "EM_POOLS",
     "THS_POOLS",
     "LimitUpUpstreamError",
+    "MAIN_INDEX_SYMBOLS",
     "epoch_to_hhmmss",
     "fetch_em_changes",
     "fetch_em_concepts",
     "fetch_em_pool",
+    "fetch_tencent_index_quotes",
     "fetch_tencent_quotes",
     "fetch_ths_changes",
     "fetch_ths_blocks",

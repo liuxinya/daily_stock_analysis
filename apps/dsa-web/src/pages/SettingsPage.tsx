@@ -797,6 +797,14 @@ const SchedulerSettingsCard: React.FC<SchedulerSettingsCardProps> = ({
                   {formatSchedulerTimestamp(status?.lastSuccessAt, language)}
                 </dd>
               </div>
+              {status?.backgroundTasks?.length ? (
+                <div className="rounded-xl border settings-border bg-card/60 px-3 py-2">
+                  <dt className="text-muted-text">{t('settings.schedulerBackgroundTasks')}</dt>
+                  <dd data-testid="scheduler-background-tasks" className="mt-1 break-words font-medium text-foreground">
+                    {status.backgroundTasks.join(', ')}
+                  </dd>
+                </div>
+              ) : null}
               {status?.lastError ? (
                 <div className="rounded-xl border border-danger/40 bg-danger/10 px-3 py-2">
                   <dt className="text-danger">{t('settings.schedulerLastError')}</dt>
